@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useTransition } from "react";
+import { useState, useMemo, useTransition, useRef, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -15,11 +15,16 @@ import {
   CheckCircle2,
   XCircle,
   Zap,
+  ChevronDown,
+  MessageSquarePlus,
+  Play,
+  FileText,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TimeAgo } from "@/components/ui/time-ago";
 import { useGlobalChat } from "@/components/shared/global-chat-provider";
 import { rejectPromptRequest } from "@/app/(app)/repos/[owner]/[repo]/prompts/actions";
+import { SuggestPromptDialog } from "@/components/prompt-request/suggest-prompt-dialog";
 import type { PromptRequest, PromptRequestStatus } from "@/lib/prompt-request-store";
 
 type StatusTab = "open" | "completed" | "rejected";
@@ -61,6 +66,20 @@ export function PromptList({ owner, repo, promptRequests }: PromptListProps) {
   const router = useRouter();
   const [closingId, setClosingId] = useState<string | null>(null);
   const [, startTransition] = useTransition();
+  const [newMenuOpen, setNewMenuOpen] = useState(false);
+  const [suggestDialogOpen, setSuggestDialogOpen] = useState(false);
+  const newMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!newMenuOpen) return;
+    const handle = (e: MouseEvent) => {
+      if (newMenuRef.current && !newMenuRef.current.contains(e.target as Node)) {
+        setNewMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [newMenuOpen]);
 
   const counts = useMemo(() => {
     const c = { open: 0, completed: 0, rejected: 0 };
@@ -147,23 +166,73 @@ export function PromptList({ owner, repo, promptRequests }: PromptListProps) {
             {sortLabels[sort]}
           </button>
 
-          <div className="ml-auto">
+          <div className="ml-auto relative" ref={newMenuRef}>
             <button
-              onClick={() =>
-                openChat({
-                  chatType: "general",
-                  contextKey: `${owner}/${repo}`,
-                  contextBody: {},
-                  placeholder: "Describe the change you want, then say 'open a prompt request'...",
-                  emptyTitle: "New Prompt Request",
-                  emptyDescription: "Chat with Ghost to create a prompt request for this repo.",
-                })
-              }
-              className="flex items-center gap-1.5 h-8 px-3 text-xs font-medium bg-foreground text-background rounded-lg hover:bg-foreground/90 transition-colors"
+              onClick={() => setNewMenuOpen((v) => !v)}
+              className="flex items-center gap-1.5 h-8 px-3 text-xs font-medium bg-foreground text-background rounded-lg hover:bg-foreground/90 transition-colors cursor-pointer"
             >
               <Sparkles className="w-3 h-3" />
-              New
+              Prompt
+              <ChevronDown className={cn("w-3 h-3 opacity-60 transition-transform", newMenuOpen && "rotate-180")} />
             </button>
+            {newMenuOpen && (
+              <div className="absolute right-0 top-full mt-1.5 w-56 rounded-lg border border-border/60 bg-background shadow-xl z-50 py-1 animate-in fade-in slide-in-from-top-1 duration-150">
+                <button
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    setSuggestDialogOpen(true);
+                  }}
+                  className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-muted/50 transition-colors cursor-pointer"
+                >
+                  <MessageSquarePlus className="w-4 h-4 text-muted-foreground/60 mt-0.5 shrink-0" />
+                  <div>
+                    <div className="text-[12px] font-medium text-foreground">Suggest Prompt</div>
+                    <div className="text-[10px] text-muted-foreground/50 mt-0.5">Draft a request for maintainer review</div>
+                  </div>
+                </button>
+                <button
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    openChat({
+                      chatType: "general",
+                      contextKey: `${owner}/${repo}`,
+                      contextBody: {},
+                      placeholder: "Describe the change you want Ghost to make...",
+                      emptyTitle: "Run Prompt with Ghost",
+                      emptyDescription: "Ghost will make the changes and open a PR with the full AI conversation.",
+                    });
+                  }}
+                  className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-muted/50 transition-colors cursor-pointer"
+                >
+                  <Play className="w-4 h-4 text-muted-foreground/60 mt-0.5 shrink-0" />
+                  <div>
+                    <div className="text-[12px] font-medium text-foreground">Run with Ghost</div>
+                    <div className="text-[10px] text-muted-foreground/50 mt-0.5">Execute now &mdash; creates a PR with AI convo</div>
+                  </div>
+                </button>
+                <div className="h-px bg-border/40 mx-2 my-1" />
+                <button
+                  onClick={() => {
+                    setNewMenuOpen(false);
+                    openChat({
+                      chatType: "general",
+                      contextKey: `${owner}/${repo}`,
+                      contextBody: {},
+                      placeholder: "Describe the change you want, then say 'open a prompt request'...",
+                      emptyTitle: "New Prompt Request",
+                      emptyDescription: "Chat with Ghost to create a prompt request for this repo.",
+                    });
+                  }}
+                  className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-muted/50 transition-colors cursor-pointer"
+                >
+                  <FileText className="w-4 h-4 text-muted-foreground/60 mt-0.5 shrink-0" />
+                  <div>
+                    <div className="text-[12px] font-medium text-foreground">Open Prompt Request</div>
+                    <div className="text-[10px] text-muted-foreground/50 mt-0.5">Chat with Ghost to draft a request</div>
+                  </div>
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -214,7 +283,7 @@ export function PromptList({ owner, repo, promptRequests }: PromptListProps) {
           </p>
         </div>
       ) : (
-        <div className="border border-border divide-y divide-border mx-4">
+        <div className="divide-y divide-border mx-4">
           {filtered.map((pr) => (
             <Link
               key={pr.id}
@@ -228,7 +297,7 @@ export function PromptList({ owner, repo, promptRequests }: PromptListProps) {
               ) : pr.status === "rejected" ? (
                 <XCircle className="w-4 h-4 text-red-400/60 shrink-0" />
               ) : (
-                <Sparkles className="w-4 h-4 text-green-400/60 shrink-0" />
+                <CircleDot className="w-4 h-4 text-green-400/60 shrink-0" />
               )}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
@@ -276,6 +345,13 @@ export function PromptList({ owner, repo, promptRequests }: PromptListProps) {
           ))}
         </div>
       )}
+
+      <SuggestPromptDialog
+        owner={owner}
+        repo={repo}
+        open={suggestDialogOpen}
+        onOpenChange={setSuggestDialogOpen}
+      />
     </div>
   );
 }

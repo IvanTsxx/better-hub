@@ -5,6 +5,7 @@ import {
   StopCircle,
   SkipForward,
   Clock,
+  Circle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -19,8 +20,12 @@ export function StatusIcon({
 }) {
   const size = cn("w-3.5 h-3.5 shrink-0", className);
 
-  if (status === "in_progress" || status === "queued" || status === "waiting" || status === "pending") {
+  if (status === "in_progress") {
     return <Loader2 className={cn(size, "text-warning animate-spin")} />;
+  }
+
+  if (status === "queued" || status === "waiting" || status === "pending") {
+    return <Circle className={cn(size, "text-warning/60")} />;
   }
 
   if (status === "completed" || status === "action_required") {

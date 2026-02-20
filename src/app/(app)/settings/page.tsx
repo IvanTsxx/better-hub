@@ -1,28 +1,16 @@
-import { auth } from "@/lib/auth";
-import { headers } from "next/headers";
-import { getUserSettings } from "@/lib/user-settings-store";
-import { SettingsContent } from "@/components/settings/settings-content";
+"use client";
 
-export default async function SettingsPage() {
-  const reqHeaders = await headers();
-  const session = await auth.api.getSession({ headers: reqHeaders });
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 
-  if (!session?.user) return null;
+export default function SettingsPage() {
+  const router = useRouter();
 
-  const settings = getUserSettings(session.user.id);
-  const accounts = await auth.api.listUserAccounts({ headers: reqHeaders });
+  useEffect(() => {
+    // Open cmdk in settings mode, then redirect away
+    window.dispatchEvent(new CustomEvent("open-cmdk-mode", { detail: "settings" }));
+    router.replace("/dashboard");
+  }, [router]);
 
-  return (
-    <SettingsContent
-      initialSettings={settings}
-      user={{
-        name: session.user.name,
-        email: session.user.email,
-        image: session.user.image ?? null,
-      }}
-      connectedAccounts={(accounts as any[]).map((a: any) => ({
-        providerId: a.providerId,
-      }))}
-    />
-  );
+  return null;
 }

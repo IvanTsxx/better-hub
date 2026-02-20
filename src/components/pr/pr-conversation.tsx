@@ -8,10 +8,12 @@ import { CollapsibleReviewCard } from "./collapsible-review-card";
 import { BotActivityGroup } from "./bot-activity-group";
 import { CommitActivityGroup } from "./commit-activity-group";
 import { ReactionDisplay, type Reactions } from "@/components/shared/reaction-display";
+import { CollapsibleDescription } from "./collapsible-description";
 
 interface BaseUser {
   login: string;
   avatar_url: string;
+  type?: string;
 }
 
 export interface DescriptionEntry {
@@ -69,7 +71,11 @@ function isBot(entry: TimelineEntry): boolean {
   if (!entry.user) return false;
   if (entry.type === "description") return false;
   if (entry.type === "commit") return false;
-  return entry.user.login.endsWith("[bot]") || entry.user.login.endsWith("-bot");
+  return (
+    entry.user.type === "Bot" ||
+    entry.user.login.endsWith("[bot]") ||
+    entry.user.login.endsWith("-bot")
+  );
 }
 
 type GroupedItem =
@@ -84,11 +90,7 @@ function groupEntries(entries: TimelineEntry[]): GroupedItem[] {
 
   const flushBots = () => {
     if (botBuffer.length === 0) return;
-    if (botBuffer.length === 1) {
-      groups.push({ kind: "entry", entry: botBuffer[0], index: -1 });
-    } else {
-      groups.push({ kind: "bot-group", entries: [...botBuffer] });
-    }
+    groups.push({ kind: "bot-group", entries: [...botBuffer] });
     botBuffer = [];
   };
 
@@ -101,12 +103,14 @@ function groupEntries(entries: TimelineEntry[]): GroupedItem[] {
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
     if (entry.type === "commit") {
-      flushBots();
+      // Commits are "transparent" to bot grouping — don't flush bots
       commitBuffer.push(entry);
     } else if (isBot(entry)) {
+      // Flush any pending commits before adding to bot buffer
       flushCommits();
       botBuffer.push(entry);
     } else {
+      // Human entry — flush everything
       flushBots();
       flushCommits();
       groups.push({ kind: "entry", entry, index: i });
@@ -147,7 +151,7 @@ export async function PRConversation({
               <div className="space-y-2">
                 {item.entries.map((entry) => {
                   if (entry.type === "review") {
-                    return <ReviewCardWrapper key={`review-${entry.id}`} entry={entry} />;
+                    return <ReviewCardWrapper key={`review-${entry.id}`} entry={entry} owner={owner} repo={repo} />;
                   }
                   if (entry.type === "commit") {
                     return <CommitGroup key={`commit-${entry.sha}`} commits={[entry]} />;
@@ -174,7 +178,7 @@ export async function PRConversation({
 
         const { entry, index } = item;
         if (entry.type === "review") {
-          return <ReviewCardWrapper key={`review-${entry.id}`} entry={entry} />;
+          return <ReviewCardWrapper key={`review-${entry.id}`} entry={entry} owner={owner} repo={repo} />;
         }
         if (entry.type === "commit") {
           return <CommitGroup key={`commit-${entry.sha}`} commits={[entry]} />;
@@ -217,22 +221,45 @@ async function ChatMessage({
 }) {
   const hasBody = entry.body && entry.body.trim().length > 0;
 
+  // Description entry: no header (author info is in the dossier above), just render body
+  if (entry.type === "description") {
+    return (
+      <div className="group">
+        {hasBody ? (
+          <CollapsibleDescription>
+            <div className="px-1">
+              <MarkdownRenderer content={entry.body} className="ghmd-sm" issueRefContext={{ owner, repo }} />
+            </div>
+          </CollapsibleDescription>
+        ) : (
+          <div className="px-1 py-2">
+            <p className="text-xs text-muted-foreground/30 italic">
+              No description provided.
+            </p>
+          </div>
+        )}
+
+        {entry.reactions && (
+          <div className="px-1 pb-2 pt-1">
+            <ReactionDisplay
+              reactions={entry.reactions}
+              owner={owner}
+              repo={repo}
+              contentType="issue"
+              contentId={pullNumber}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="group">
       <div
-        className={cn(
-          "border border-border/60 rounded-lg overflow-hidden",
-          isFirst && "border-border"
-        )}
+        className="border border-border/60 rounded-lg overflow-hidden"
       >
-        <div
-          className={cn(
-            "flex items-center gap-2 px-3 py-1.5 border-b border-border/60",
-            isFirst
-              ? "bg-card/80"
-              : "bg-card/50"
-          )}
-        >
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border/60 bg-card/50">
           {entry.user ? (
             <Link href={`/users/${entry.user.login}`} className="flex items-center gap-2 hover:text-foreground transition-colors">
               <Image
@@ -252,11 +279,6 @@ async function ChatMessage({
               <span className="text-xs font-medium text-foreground/80">ghost</span>
             </>
           )}
-          {entry.type === "description" && (
-            <span className="text-[10px] text-muted-foreground/50">
-              opened
-            </span>
-          )}
           {entry.type === "comment" &&
             entry.author_association &&
             entry.author_association !== "NONE" && (
@@ -271,7 +293,7 @@ async function ChatMessage({
 
         {hasBody ? (
           <div className="px-3 py-2.5">
-            <MarkdownRenderer content={entry.body} className="ghmd-sm" />
+            <MarkdownRenderer content={entry.body} className="ghmd-sm" issueRefContext={{ owner, repo }} />
           </div>
         ) : (
           <div className="px-3 py-3">
@@ -287,8 +309,8 @@ async function ChatMessage({
               reactions={entry.reactions}
               owner={owner}
               repo={repo}
-              contentType={entry.type === "description" ? "issue" : "issueComment"}
-              contentId={entry.type === "description" ? pullNumber : entry.id as number}
+              contentType="issueComment"
+              contentId={entry.id as number}
             />
           </div>
         )}
@@ -297,7 +319,7 @@ async function ChatMessage({
   );
 }
 
-async function ReviewCardWrapper({ entry }: { entry: ReviewEntry }) {
+async function ReviewCardWrapper({ entry, owner, repo }: { entry: ReviewEntry; owner: string; repo: string }) {
   const hasBody = entry.body && entry.body.trim().length > 0;
 
   // Skip COMMENTED reviews with no body and no comments
@@ -312,7 +334,7 @@ async function ReviewCardWrapper({ entry }: { entry: ReviewEntry }) {
   // Pre-render the markdown body on the server
   const bodyContent = hasBody ? (
     <div className="px-3 py-2.5">
-      <MarkdownRenderer content={entry.body!} className="ghmd-sm" />
+      <MarkdownRenderer content={entry.body!} className="ghmd-sm" issueRefContext={{ owner, repo }} />
     </div>
   ) : null;
 

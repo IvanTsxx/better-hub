@@ -23,16 +23,17 @@ export async function GET(request: NextRequest) {
   }
 
   const content = (data as any).content as string;
+  const sha = (data as any).sha as string | undefined;
 
   if (highlight) {
     try {
       const tokens = await highlightFullFile(content, path);
-      return NextResponse.json({ content, tokens });
+      return NextResponse.json({ content, tokens, sha });
     } catch {
       // Fall back to content without tokens
-      return NextResponse.json({ content });
+      return NextResponse.json({ content, sha });
     }
   }
 
-  return NextResponse.json({ content });
+  return NextResponse.json({ content, sha });
 }

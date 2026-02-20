@@ -66,7 +66,7 @@ export function RepoLayoutWrapper({ sidebar, children, owner, repo, avatarUrl }:
   return (
     <div className="flex flex-col flex-1 min-h-0">
       {/* Repo header — always visible */}
-      <div className="shrink-0 flex items-center px-4 pb-1">
+      <div className={cn("shrink-0 flex items-center pb-1", collapsed ? "pl-4 pr-2" : "px-4")}>
         <div className="flex items-center gap-1 text-sm font-mono">
           <Link
             href={`/orgs/${owner}`}
@@ -130,7 +130,10 @@ export function RepoLayoutWrapper({ sidebar, children, owner, repo, avatarUrl }:
       )}
 
       {/* Main content */}
-      <div className="flex-1 min-w-0 flex flex-col min-h-0">
+      <div
+        className="flex-1 min-w-0 flex flex-col min-h-0"
+        style={{ '--repo-pr': collapsed ? '0.5rem' : '1rem' } as React.CSSProperties}
+      >
         {children}
       </div>
     </div>

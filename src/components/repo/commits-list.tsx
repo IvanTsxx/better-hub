@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useMemo, useRef, useEffect } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import { GitBranch, ChevronDown, Search, Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TimeAgo } from "@/components/ui/time-ago";
 import { fetchCommitsByDate } from "@/app/(app)/repos/[owner]/[repo]/commits/actions";
@@ -28,6 +29,103 @@ interface CommitsListProps {
   repo: string;
   commits: Commit[];
   defaultBranch: string;
+  branches: { name: string }[];
+}
+
+function BranchPicker({
+  branches,
+  currentBranch,
+  defaultBranch,
+  onChange,
+}: {
+  branches: { name: string }[];
+  currentBranch: string;
+  defaultBranch: string;
+  onChange: (branch: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (open) {
+      setSearch("");
+      setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  }, [open]);
+
+  const sorted = useMemo(() => {
+    const list = [...branches].sort((a, b) => {
+      if (a.name === defaultBranch) return -1;
+      if (b.name === defaultBranch) return 1;
+      return a.name.localeCompare(b.name);
+    });
+    if (!search) return list;
+    const q = search.toLowerCase();
+    return list.filter((b) => b.name.toLowerCase().includes(q));
+  }, [branches, defaultBranch, search]);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5 px-3 py-2 text-[11px] font-mono border border-border hover:bg-muted/60 dark:hover:bg-white/3 transition-colors cursor-pointer"
+      >
+        <GitBranch className="w-3 h-3 text-muted-foreground/70" />
+        <span className="max-w-[140px] truncate">{currentBranch}</span>
+        <ChevronDown className="w-3 h-3 text-muted-foreground/50" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => { setOpen(false); setSearch(""); }} />
+          <div className="absolute top-full left-0 mt-1 z-50 w-72 border border-border bg-card shadow-lg">
+            <div className="p-2 border-b border-border">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground/50" />
+                <input
+                  ref={inputRef}
+                  type="text"
+                  placeholder="Find a branch..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="w-full bg-transparent text-xs pl-7 pr-2 py-1.5 border border-border placeholder:text-muted-foreground/50 focus:outline-none focus:border-foreground/20 transition-colors"
+                />
+              </div>
+            </div>
+            <div className="max-h-60 overflow-y-auto">
+              {sorted.map((b) => {
+                const isActive = b.name === currentBranch;
+                const isDefault = b.name === defaultBranch;
+                return (
+                  <button
+                    key={b.name}
+                    onClick={() => { onChange(b.name); setOpen(false); setSearch(""); }}
+                    className={cn(
+                      "w-full text-left px-3 py-1.5 text-xs font-mono hover:bg-muted/60 dark:hover:bg-white/3 transition-colors cursor-pointer flex items-center gap-2",
+                      isActive && "bg-muted/30"
+                    )}
+                  >
+                    <span className="w-3.5 shrink-0 flex items-center justify-center">
+                      {isActive && <Check className="w-3 h-3 text-foreground" />}
+                    </span>
+                    <span className="truncate flex-1">{b.name}</span>
+                    {isDefault && (
+                      <span className="text-[9px] text-muted-foreground/50 shrink-0">default</span>
+                    )}
+                  </button>
+                );
+              })}
+              {sorted.length === 0 && (
+                <div className="px-3 py-4 text-center text-[11px] text-muted-foreground/50 font-mono">
+                  No branches found
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 function groupByDate(commits: Commit[]) {
@@ -52,36 +150,56 @@ export function CommitsList({
   repo,
   commits,
   defaultBranch,
+  branches,
 }: CommitsListProps) {
   const [search, setSearch] = useState("");
   const [copiedSha, setCopiedSha] = useState<string | null>(null);
   const [since, setSince] = useState("");
   const [until, setUntil] = useState("");
+  const [currentBranch, setCurrentBranch] = useState(defaultBranch);
   const [displayedCommits, setDisplayedCommits] = useState<Commit[]>(commits);
   const [isPending, startTransition] = useTransition();
 
   const hasDateFilter = since !== "" || until !== "";
 
-  const handleDateChange = (newSince: string, newUntil: string) => {
-    if (!newSince && !newUntil) {
-      setDisplayedCommits(commits);
-      return;
-    }
+  const fetchCommits = (branch: string, newSince?: string, newUntil?: string) => {
     startTransition(async () => {
       const result = await fetchCommitsByDate(
         owner,
         repo,
         newSince ? new Date(newSince).toISOString() : undefined,
-        newUntil ? new Date(newUntil + "T23:59:59").toISOString() : undefined
+        newUntil ? new Date(newUntil + "T23:59:59").toISOString() : undefined,
+        branch
       );
       setDisplayedCommits(result as Commit[]);
     });
   };
 
+  const handleDateChange = (newSince: string, newUntil: string) => {
+    if (!newSince && !newUntil && currentBranch === defaultBranch) {
+      setDisplayedCommits(commits);
+      return;
+    }
+    fetchCommits(currentBranch, newSince, newUntil);
+  };
+
+  const handleBranchChange = (branch: string) => {
+    setCurrentBranch(branch);
+    if (branch === defaultBranch && !since && !until) {
+      setDisplayedCommits(commits);
+    } else {
+      fetchCommits(branch, since, until);
+    }
+  };
+
   const clearDates = () => {
     setSince("");
     setUntil("");
-    setDisplayedCommits(commits);
+    if (currentBranch === defaultBranch) {
+      setDisplayedCommits(commits);
+    } else {
+      fetchCommits(currentBranch);
+    }
   };
 
   const filtered = search
@@ -101,6 +219,12 @@ export function CommitsList({
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
+        <BranchPicker
+          branches={branches}
+          currentBranch={currentBranch}
+          defaultBranch={defaultBranch}
+          onChange={handleBranchChange}
+        />
         <div className="relative flex-1">
           <input
             type="text"

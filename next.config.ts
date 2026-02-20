@@ -2,6 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  serverExternalPackages: ["@prisma/client"],
   experimental: {
     staleTimes: {
       dynamic: 0,
@@ -10,7 +11,23 @@ const nextConfig: NextConfig = {
   },
   async rewrites() {
     return {
-      beforeFiles: [],
+      beforeFiles: [
+        // GitHub uses singular /pull/:number but our routes use /pulls/:number
+        {
+          source: "/:owner/:repo/pull/:number",
+          destination: "/repos/:owner/:repo/pulls/:number",
+        },
+        // GitHub uses singular /commit/:sha but our routes use /commits/:sha
+        {
+          source: "/:owner/:repo/commit/:sha",
+          destination: "/repos/:owner/:repo/commits/:sha",
+        },
+        // GitHub uses /actions/runs/:runId but our routes use /actions/:runId
+        {
+          source: "/:owner/:repo/actions/runs/:runId",
+          destination: "/repos/:owner/:repo/actions/:runId",
+        },
+      ],
       afterFiles: [],
       fallback: [
         { source: "/:owner/:repo", destination: "/repos/:owner/:repo" },

@@ -9,6 +9,11 @@ export async function CodeViewer({
   filePath,
   fileSize,
   hideHeader,
+  canEdit,
+  sha,
+  owner,
+  repo,
+  branch,
 }: {
   content: string;
   filename: string;
@@ -16,6 +21,11 @@ export async function CodeViewer({
   filePath?: string;
   fileSize?: number;
   hideHeader?: boolean;
+  canEdit?: boolean;
+  sha?: string;
+  owner?: string;
+  repo?: string;
+  branch?: string;
 }) {
   const lang = getLanguageFromFilename(filename);
   const html = await highlightCode(content, lang);
@@ -35,6 +45,11 @@ export async function CodeViewer({
       gutterW={gutterW}
       className={className}
       hideHeader={hideHeader}
+      canEdit={canEdit}
+      sha={sha}
+      owner={owner}
+      repo={repo}
+      branch={branch}
     />
   );
 }

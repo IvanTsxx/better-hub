@@ -84,7 +84,7 @@ export function IssueHeader({
           .map((label) => (
             <span
               key={label.name}
-              className="text-[9px] font-mono px-1.5 py-0.5 border"
+              className="text-[9px] font-mono px-2 py-0.5 border rounded-full"
               style={{
                 borderColor: `#${label.color || "888"}30`,
                 color: `#${label.color || "888"}`,
@@ -110,12 +110,12 @@ export function IssueHeader({
                     key={pr.number}
                     href={`/${owner}/${repo}/pulls/${pr.number}`}
                     className={cn(
-                      "inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-mono border rounded-sm transition-colors hover:bg-muted/50",
+                      "inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-mono rounded-sm transition-colors hover:bg-muted/50",
                       pr.merged
-                        ? "text-purple-400 border-purple-400/20"
+                        ? "text-purple-400"
                         : pr.state === "open"
-                          ? "text-success border-success/20"
-                          : "text-alert-important border-alert-important/20"
+                          ? "text-success"
+                          : "text-alert-important"
                     )}
                   >
                     <GitPullRequest className="w-3 h-3" />
@@ -144,12 +144,12 @@ export function IssueHeader({
                     key={`${pr.repoOwner}/${pr.repoName}#${pr.number}`}
                     href={`/${pr.repoOwner}/${pr.repoName}/pulls/${pr.number}`}
                     className={cn(
-                      "inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-mono border border-dashed rounded-sm transition-colors hover:bg-muted/50",
+                      "inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-mono rounded-sm transition-colors hover:bg-muted/50",
                       pr.merged
-                        ? "text-purple-400/70 border-purple-400/15"
+                        ? "text-purple-400/70"
                         : pr.state === "open"
-                          ? "text-success/70 border-success/15"
-                          : "text-alert-important/70 border-alert-important/15"
+                          ? "text-success/70"
+                          : "text-alert-important/70"
                     )}
                   >
                     <ExternalLink className="w-3 h-3 shrink-0" />

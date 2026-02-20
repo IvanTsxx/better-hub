@@ -40,7 +40,7 @@ export default async function RepoLayout({
     (org: any) => org.login?.toLowerCase() === owner.toLowerCase()
   );
 
-  const promptRequestsCount = countPromptRequests(owner, repoName, "open");
+  const promptRequestsCount = await countPromptRequests(owner, repoName, "open");
 
   if (!repoData) {
     return (
@@ -100,7 +100,7 @@ export default async function RepoLayout({
           />
         }
       >
-        <div className="shrink-0 px-4">
+        <div className="shrink-0 pl-4" style={{ paddingRight: 'var(--repo-pr, 1rem)' }}>
           <RepoNav
             owner={owner}
             repo={repoName}

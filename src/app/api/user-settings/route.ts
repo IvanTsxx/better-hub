@@ -17,11 +17,12 @@ export async function GET() {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  const settings = getUserSettings(session.user.id);
+  const settings = await getUserSettings(session.user.id);
 
   return Response.json({
     ...settings,
     openrouterApiKey: maskApiKey(settings.openrouterApiKey),
+    githubPat: maskApiKey(settings.githubPat),
   });
 }
 
@@ -40,6 +41,11 @@ export async function PATCH(request: Request) {
     "ghostModel",
     "useOwnApiKey",
     "openrouterApiKey",
+    "githubPat",
+    "codeThemeLight",
+    "codeThemeDark",
+    "codeFont",
+    "codeFontSize",
   ] as const;
 
   const updates: Record<string, unknown> = {};
@@ -53,10 +59,11 @@ export async function PATCH(request: Request) {
     return Response.json({ error: "No valid fields to update" }, { status: 400 });
   }
 
-  const settings = updateUserSettings(session.user.id, updates);
+  const settings = await updateUserSettings(session.user.id, updates);
 
   return Response.json({
     ...settings,
     openrouterApiKey: maskApiKey(settings.openrouterApiKey),
+    githubPat: maskApiKey(settings.githubPat),
   });
 }

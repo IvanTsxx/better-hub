@@ -5,7 +5,7 @@ import type { UIMessage } from "ai";
 import { DefaultChatTransport } from "ai";
 import { useEffect, useMemo, useRef, useState, useCallback, memo } from "react";
 import { HighlightedCodeBlock } from "@/components/shared/highlighted-code-block";
-import { ArrowUp, Square, RotateCcw, Loader2, Check, FileEdit, FilePlus2, FileSearch, GitPullRequest, Search, Star, GitFork, Eye, EyeOff, CirclePlus, CircleX, List, GitMerge, User, UserPlus, UserMinus, Bell, BellOff, Code2, Navigation, ExternalLink, MessageSquare, Tag, GitBranch, Container, Terminal, FileUp, FileDown, GitCommitHorizontal, Power, Play, Ghost, Copy } from "lucide-react";
+import { ArrowUp, Square, RotateCcw, Loader2, Check, FileEdit, FilePlus2, FileSearch, GitPullRequest, Search, Star, GitFork, Eye, EyeOff, CirclePlus, CircleX, List, GitMerge, User, UserPlus, UserMinus, Bell, BellOff, Code2, Navigation, ExternalLink, MessageSquare, Tag, GitBranch, Container, Terminal, FileUp, FileDown, GitCommitHorizontal, Power, Play, Ghost, Copy, X } from "lucide-react";
 
 function GithubIcon({ className }: { className?: string }) {
   return (
@@ -23,10 +23,38 @@ const GHOST_THINKING_PHRASES = [
   "Manifesting a response",
 ];
 
+function formatElapsed(ms: number): string {
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${minutes}m ${secs.toString().padStart(2, "0")}s`;
+}
+
+function useElapsed(active: boolean) {
+  const startRef = useRef(active ? Date.now() : null);
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (active) {
+      if (!startRef.current) startRef.current = Date.now();
+      const id = setInterval(() => {
+        setElapsed(Date.now() - startRef.current!);
+      }, 100);
+      return () => clearInterval(id);
+    } else if (startRef.current) {
+      setElapsed(Date.now() - startRef.current);
+    }
+  }, [active]);
+
+  return startRef.current !== null ? elapsed : null;
+}
+
 function GhostThinkingIndicator({ status }: { status: string }) {
   const [phraseIdx, setPhraseIdx] = useState(
     () => Math.floor(Math.random() * GHOST_THINKING_PHRASES.length)
   );
+  const elapsed = useElapsed(true);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -47,6 +75,11 @@ function GhostThinkingIndicator({ status }: { status: string }) {
       <span className="text-[11px] font-mono text-muted-foreground/50 transition-all duration-300">
         {phrase}
       </span>
+      {elapsed !== null && elapsed >= 1000 && (
+        <span className="text-[10px] font-mono text-muted-foreground/30 tabular-nums">
+          {formatElapsed(elapsed)}
+        </span>
+      )}
       <span className="flex gap-[2px]">
         <span className="ghost-dot-1 w-[3px] h-[3px] rounded-full bg-muted-foreground/40" />
         <span className="ghost-dot-2 w-[3px] h-[3px] rounded-full bg-muted-foreground/40" />
@@ -196,6 +229,24 @@ interface AttachedContext {
   endLine: number;
 }
 
+interface HistoryItem {
+  contextKey: string;
+  title: string;
+  updatedAt: string;
+}
+
+function formatRelativeTime(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "now";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d`;
+  return `${Math.floor(days / 30)}mo`;
+}
+
 interface AIChatProps {
   apiEndpoint: string;
   contextBody: Record<string, any>;
@@ -228,6 +279,10 @@ interface AIChatProps {
   hashMentionPrFiles?: MentionableFile[];
   /** Auto-focus the input on mount */
   autoFocus?: boolean;
+  /** Recent ghost conversations to show above input when empty */
+  historyItems?: HistoryItem[];
+  /** Callback when a history item is clicked */
+  onLoadHistory?: (contextKey: string, title: string) => void;
 }
 
 export function AIChat({
@@ -250,6 +305,8 @@ export function AIChat({
   onFetchFileContent,
   hashMentionPrFiles,
   autoFocus,
+  historyItems,
+  onLoadHistory,
 }: AIChatProps) {
   const { data: session } = useSession();
   const globalChat = useGlobalChatOptional();
@@ -264,6 +321,7 @@ export function AIChat({
   // Context snapshots per user message (messageId → contexts at send time)
   const [messageContexts, setMessageContexts] = useState<Record<string, AttachedContext[]>>({});
   const pendingContextsRef = useRef<AttachedContext[] | null>(null);
+  const [historyDismissed, setHistoryDismissed] = useState(false);
 
   // Auto-focus input when requested
   useEffect(() => {
@@ -557,12 +615,13 @@ export function AIChat({
   const isLoading = status === "submitted" || isStreaming;
   const router = useRouter();
 
-  // Report working status to global context
+  // Report working status to global context (only from the active tab)
   useEffect(() => {
+    if (!autoFocus) return;
     globalChat?.setIsWorking(isLoading);
     return () => globalChat?.setIsWorking(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLoading]);
+  }, [isLoading, autoFocus]);
 
   // ─── Client-Side Action Executor ──────────────────────────────────
   const executedActionsRef = useRef<Set<string>>(new Set());
@@ -698,6 +757,20 @@ export function AIChat({
       inputRef.current.style.height = "auto";
     }
   };
+
+  // Listen for auto-send event (used by onboarding to send first Ghost message)
+  // Only the active/focused tab listens to avoid duplicate sends across tabs
+  const handleSendRef = useRef(handleSend);
+  handleSendRef.current = handleSend;
+  useEffect(() => {
+    if (!autoFocus) return;
+    const handler = (e: Event) => {
+      const msg = (e as CustomEvent).detail?.message;
+      if (msg) handleSendRef.current(msg);
+    };
+    window.addEventListener("ghost-auto-send", handler);
+    return () => window.removeEventListener("ghost-auto-send", handler);
+  }, [autoFocus]);
 
   // Associate pending context snapshot with the newly created user message
   useEffect(() => {
@@ -975,9 +1048,10 @@ export function AIChat({
 
             {/* Error state — stream died, timed out, etc. */}
             {error && (
-              <div className="flex items-center gap-2 py-1.5">
-                <span className="text-[11px] text-destructive/70">
-                  Something went wrong.
+              <div className="flex flex-col items-center gap-2 py-4">
+                <Ghost className="w-5 h-5 text-muted-foreground/20" />
+                <span className="text-[11px] text-muted-foreground/50">
+                  Ghost got lost in the void
                 </span>
                 <button
                   type="button"
@@ -985,10 +1059,10 @@ export function AIChat({
                     clearError();
                     regenerate();
                   }}
-                  className="text-[11px] text-muted-foreground/50 hover:text-foreground transition-colors cursor-pointer flex items-center gap-1"
+                  className="mt-1 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[11px] font-medium bg-foreground text-background hover:bg-foreground/85 transition-colors cursor-pointer"
                 >
-                  <RotateCcw className="w-2.5 h-2.5" />
-                  Retry
+                  <RotateCcw className="w-3 h-3" />
+                  Summon again
                 </button>
               </div>
             )}
@@ -996,6 +1070,41 @@ export function AIChat({
         )}
       </div>
       </div>
+
+      {/* Recent conversations — shown above input when chat is empty */}
+      {messages.length === 0 && !isLoading && !historyDismissed && historyItems && historyItems.length > 0 && (
+        <div className="shrink-0 border-t border-border/30 px-3 py-2">
+          <div className="flex items-center mb-1">
+            <span className="text-[10px] font-medium text-muted-foreground/30 uppercase tracking-wider">
+              Recent
+            </span>
+            <button
+              type="button"
+              onClick={() => setHistoryDismissed(true)}
+              className="ml-auto p-0.5 rounded text-muted-foreground/20 hover:text-muted-foreground/50 transition-colors cursor-pointer"
+              title="Dismiss"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+          <div className="flex flex-col gap-0.5">
+            {historyItems.slice(0, 5).map((item) => (
+              <button
+                key={item.contextKey}
+                type="button"
+                onClick={() => onLoadHistory?.(item.contextKey, item.title)}
+                className="w-full flex items-center gap-2 px-2 py-1 rounded text-left text-[11px] text-muted-foreground/50 hover:text-foreground hover:bg-muted/30 transition-colors cursor-pointer group"
+              >
+                <MessageSquare className="w-3 h-3 shrink-0 text-muted-foreground/25 group-hover:text-muted-foreground/50" />
+                <span className="truncate flex-1">{item.title}</span>
+                <span className="text-[10px] text-muted-foreground/20 shrink-0">
+                  {formatRelativeTime(item.updatedAt)}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Input area */}
       <div className="shrink-0 px-3 pb-3 pt-1">
@@ -1239,6 +1348,7 @@ export function ToolInvocationDisplay({
 }) {
   const isLoading = state === "input-streaming" || state === "input-available";
   const isDone = state === "output-available";
+  const elapsed = useElapsed(isLoading);
   const hasError = isDone && result?.error;
   const hasSuccess = isDone && result?.success;
 
@@ -1551,6 +1661,14 @@ export function ToolInvocationDisplay({
       <span className="truncate">
         {isLoading ? c.loadingText : hasError ? result.error : c.doneText}
       </span>
+      {elapsed !== null && elapsed >= 500 && (
+        <span className={cn(
+          "shrink-0 text-[10px] tabular-nums",
+          isLoading ? "opacity-60" : "opacity-40"
+        )}>
+          {formatElapsed(elapsed)}
+        </span>
+      )}
       {isLoading && onStop && (
         <button
           onClick={onStop}

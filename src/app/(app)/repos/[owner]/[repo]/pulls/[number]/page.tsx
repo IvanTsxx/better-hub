@@ -1,17 +1,20 @@
 import {
-  getPullRequest,
+  getPullRequestBundle,
   getPullRequestFiles,
-  getPullRequestComments,
-  getPullRequestReviews,
-  getPullRequestReviewThreads,
-  getPullRequestCommits,
   getRepo,
   getAuthenticatedUser,
   extractRepoPermissions,
   getOctokit,
   fetchCheckStatusForRef,
+  getUser,
+  getUserPublicRepos,
+  getUserPublicOrgs,
+  getPersonRepoActivity,
+  getRepoContributors,
   type CheckStatus,
+  type PRBundleData,
 } from "@/lib/github";
+import { computeContributorScore, type ScoreResult } from "@/lib/contributor-score";
 import { extractParticipants } from "@/lib/github-utils";
 import { highlightDiffLines, type SyntaxToken } from "@/lib/shiki";
 import { PRHeader } from "@/components/pr/pr-header";
@@ -25,6 +28,8 @@ import {
 import { PRMergePanel } from "@/components/pr/pr-merge-panel";
 import { PRCommentForm } from "@/components/pr/pr-comment-form";
 import { PRReviewForm } from "@/components/pr/pr-review-form";
+import { PRConflictResolver } from "@/components/pr/pr-conflict-resolver";
+import { PRAuthorDossier, type AuthorDossierData } from "@/components/pr/pr-author-dossier";
 import { ChatPageActivator } from "@/components/shared/chat-page-activator";
 import { TrackView } from "@/components/shared/track-view";
 import { auth } from "@/lib/auth";
@@ -33,26 +38,78 @@ import { inngest } from "@/lib/inngest";
 
 export default async function PRDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ owner: string; repo: string; number: string }>;
+  searchParams: Promise<{ resolve?: string }>;
 }) {
   const { owner, repo, number: numStr } = await params;
+  const sp = await searchParams;
   const pullNumber = parseInt(numStr, 10);
 
-  const [pr, files, comments, reviews, threads, commits, repoData, currentUser] = await Promise.all([
-    getPullRequest(owner, repo, pullNumber),
+  const [bundle, files, repoData, currentUser] = await Promise.all([
+    getPullRequestBundle(owner, repo, pullNumber),
     getPullRequestFiles(owner, repo, pullNumber),
-    getPullRequestComments(owner, repo, pullNumber),
-    getPullRequestReviews(owner, repo, pullNumber),
-    getPullRequestReviewThreads(owner, repo, pullNumber),
-    getPullRequestCommits(owner, repo, pullNumber),
     getRepo(owner, repo),
     getAuthenticatedUser(),
   ]);
 
+  if (!bundle) {
+    return (
+      <div className="py-16 text-center">
+        <p className="text-xs text-muted-foreground font-mono">
+          Pull request not found
+        </p>
+      </div>
+    );
+  }
+
+  const { pr, issueComments, reviewComments, reviews, reviewThreads: threads, commits } = bundle;
+  const comments = { issueComments, reviewComments };
+
   const permissions = extractRepoPermissions(repoData);
   const canWrite = permissions.push || permissions.admin || permissions.maintain;
   const canTriage = canWrite || permissions.triage;
+
+  // Fetch author dossier data in parallel (cached via local-first pattern)
+  const authorLogin = pr?.user?.login;
+  const [authorProfile, authorRepos, authorOrgs, authorActivity, contributors] = authorLogin
+    ? await Promise.all([
+        getUser(authorLogin),
+        getUserPublicRepos(authorLogin, 6),
+        getUserPublicOrgs(authorLogin),
+        getPersonRepoActivity(owner, repo, authorLogin),
+        getRepoContributors(owner, repo),
+      ])
+    : [null, [], [], { commits: [], prs: [], issues: [], reviews: [] }, { list: [], totalCount: 0 }];
+
+  // Compute contributor score
+  const isOrgMember = (authorOrgs as any[]).some(
+    (o: any) => o.login?.toLowerCase() === owner.toLowerCase()
+  );
+  const contributorEntry = (contributors as any).list?.find(
+    (c: any) => c.login?.toLowerCase() === authorLogin?.toLowerCase()
+  );
+  const sortedAuthorRepos = (authorRepos as any[])
+    .sort((a: any, b: any) => (b.stargazers_count ?? 0) - (a.stargazers_count ?? 0))
+    .slice(0, 6);
+
+  let contributorScore: ScoreResult | null = null;
+  if (authorProfile && authorLogin) {
+    contributorScore = computeContributorScore({
+      followers: (authorProfile as any).followers ?? 0,
+      publicRepos: (authorProfile as any).public_repos ?? 0,
+      accountCreated: (authorProfile as any).created_at ?? "",
+      commitsInRepo: (authorActivity as any).commits?.length ?? 0,
+      prsInRepo: ((authorActivity as any).prs ?? []).map((p: any) => ({ state: p.state })),
+      reviewsInRepo: (authorActivity as any).reviews?.length ?? 0,
+      isContributor: !!contributorEntry,
+      contributionCount: contributorEntry?.contributions ?? 0,
+      isOrgMember,
+      isOwner: authorLogin?.toLowerCase() === owner.toLowerCase(),
+      topRepoStars: sortedAuthorRepos.map((r: any) => r.stargazers_count ?? 0),
+    });
+  }
 
   // Fetch check status for open PRs
   let checkStatus: CheckStatus | undefined;
@@ -68,16 +125,6 @@ export default async function PRDetailPage({
 
   // Fetch session unconditionally (used for embedding trigger)
   const session = await auth.api.getSession({ headers: await headers() });
-
-  if (!pr) {
-    return (
-      <div className="py-16 text-center">
-        <p className="text-xs text-muted-foreground font-mono">
-          Pull request not found
-        </p>
-      </div>
-    );
-  }
 
   // Fire-and-forget: embed PR content for semantic search
   if (session?.user?.id) {
@@ -151,7 +198,7 @@ export default async function PRDetailPage({
       type: "comment",
       id: c.id,
       user: c.user
-        ? { login: c.user.login, avatar_url: c.user.avatar_url }
+        ? { login: c.user.login, avatar_url: c.user.avatar_url, type: (c.user as any).type ?? undefined }
         : null,
       body: c.body || "",
       created_at: c.created_at,
@@ -165,7 +212,7 @@ export default async function PRDetailPage({
       type: "review",
       id: r.id,
       user: r.user
-        ? { login: r.user.login, avatar_url: r.user.avatar_url }
+        ? { login: r.user.login, avatar_url: r.user.avatar_url, type: (r.user as any).type ?? undefined }
         : null,
       body: r.body || null,
       state: r.state,
@@ -217,20 +264,11 @@ export default async function PRDetailPage({
     );
   }
 
-  // DEBUG: verify highlight data is populated
-  const hlFileCount = Object.keys(highlightData).length;
-  const hlSample = Object.entries(highlightData)[0];
-  console.log(`[highlight-debug] files=${hlFileCount}, sample=${hlSample ? hlSample[0] + ' keys=' + Object.keys(hlSample[1]).length : 'none'}`);
-  if (hlSample) {
-    const sampleTokens = Object.values(hlSample[1])[0];
-    if (sampleTokens?.[0]) {
-      console.log(`[highlight-debug] first token: text="${sampleTokens[0].text}" light="${sampleTokens[0].lightColor}" dark="${sampleTokens[0].darkColor}"`);
-    }
-  }
-
   const isOpen = pr.state === "open" && !pr.merged_at;
+  const showConflictResolver = sp.resolve === "conflicts" && isOpen;
   const headSha = pr.head.sha;
   const headBranch = pr.head.ref;
+  const baseSha = pr.base.sha;
 
   // Build review summaries for reviews panel
   const reviewSummaries = reviews.map((r) => ({
@@ -282,6 +320,17 @@ export default async function PRDetailPage({
       commentCount={comments.issueComments.length}
       fileCount={files?.length || 0}
       hasReviews={reviews.some((r) => r.state !== "PENDING")}
+      conflictPanel={
+        showConflictResolver ? (
+          <PRConflictResolver
+            owner={owner}
+            repo={repo}
+            pullNumber={pullNumber}
+            baseBranch={pr.base.ref}
+            headBranch={pr.head.ref}
+          />
+        ) : undefined
+      }
       infoBar={
         <>
           <PRHeader
@@ -298,7 +347,7 @@ export default async function PRDetailPage({
             deletions={pr.deletions}
             changedFiles={pr.changed_files}
             labels={(pr.labels || []).map((l) =>
-              typeof l === "string" ? { name: l } : l
+              typeof l === "string" ? { name: l } : { ...l, color: l.color ?? undefined }
             )}
             reviewStatuses={reviewStatuses}
             checkStatus={checkStatus}
@@ -320,6 +369,8 @@ export default async function PRDetailPage({
                   repo={repo}
                   pullNumber={pr.number}
                   prTitle={pr.title}
+                  prBody={pr.body || ""}
+                  commitMessages={commits.map((c: any) => c.commit?.message || "").filter(Boolean)}
                   state={pr.state}
                   merged={!!pr.merged_at}
                   mergeable={pr.mergeable ?? null}
@@ -354,13 +405,43 @@ export default async function PRDetailPage({
           pullNumber={pullNumber}
           headSha={headSha}
           headBranch={headBranch}
+          baseSha={baseSha}
           canWrite={canWrite}
           highlightData={highlightData}
           participants={participants}
         />
       }
       conversationPanel={
-        <PRConversation entries={timeline} owner={owner} repo={repo} pullNumber={pullNumber} />
+        <>
+          {authorProfile && (
+            <PRAuthorDossier
+              author={authorProfile as AuthorDossierData}
+              orgs={(authorOrgs as any[]).map((o: any) => ({
+                login: o.login,
+                avatar_url: o.avatar_url,
+              }))}
+              topRepos={sortedAuthorRepos
+                .slice(0, 3)
+                .map((r: any) => ({
+                  name: r.name,
+                  full_name: r.full_name,
+                  stargazers_count: r.stargazers_count ?? 0,
+                  language: r.language,
+                }))}
+              isOrgMember={isOrgMember}
+              score={contributorScore}
+              contributionCount={contributorEntry?.contributions ?? 0}
+              repoActivity={{
+                commits: (authorActivity as any).commits?.length ?? 0,
+                prs: (authorActivity as any).prs?.length ?? 0,
+                reviews: (authorActivity as any).reviews?.length ?? 0,
+                issues: (authorActivity as any).issues?.length ?? 0,
+              }}
+              openedAt={pr.created_at}
+            />
+          )}
+          <PRConversation entries={timeline} owner={owner} repo={repo} pullNumber={pullNumber} />
+        </>
       }
       commentForm={
         <PRCommentForm

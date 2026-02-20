@@ -8,6 +8,7 @@ import {
   KeyRound,
   ShieldAlert,
 } from "lucide-react";
+import Link from "next/link";
 import { cn } from "@/lib/utils";
 import { TimeAgo } from "@/components/ui/time-ago";
 
@@ -235,6 +236,8 @@ export function SecurityView({
 
         {section === "advisories" && (
           <AdvisoriesSection
+            owner={owner}
+            repo={repo}
             advisories={advisories}
             advisoriesError={advisoriesError}
             filteredAdvisories={filteredAdvisories}
@@ -316,6 +319,8 @@ export function SecurityView({
 }
 
 function AdvisoriesSection({
+  owner,
+  repo,
   advisories,
   advisoriesError,
   filteredAdvisories,
@@ -324,6 +329,8 @@ function AdvisoriesSection({
   baseUrl,
   isOwner,
 }: {
+  owner: string;
+  repo: string;
   advisories: Advisory[];
   advisoriesError: string | null;
   filteredAdvisories: Advisory[];
@@ -393,11 +400,9 @@ function AdvisoriesSection({
             {filteredAdvisories.map((advisory) => {
               const sev = severityColor(advisory.severity);
               return (
-                <a
+                <Link
                   key={advisory.ghsaId || advisory.htmlUrl}
-                  href={advisory.htmlUrl || `${baseUrl}/advisories`}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  href={`/${owner}/${repo}/security/advisories/${advisory.ghsaId}`}
                   className={cn(
                     "block px-4 py-3 hover:bg-muted/50 dark:hover:bg-white/[0.02] transition-colors border-l-2",
                     sev.border
@@ -438,7 +443,7 @@ function AdvisoriesSection({
                       </span>
                     )}
                   </div>
-                </a>
+                </Link>
               );
             })}
 

@@ -8,7 +8,7 @@ export default async function PromptDetailPage({
   params: Promise<{ owner: string; repo: string; id: string }>;
 }) {
   const { owner, repo, id } = await params;
-  const promptRequest = getPromptRequest(id);
+  const promptRequest = await getPromptRequest(id);
 
   if (!promptRequest) {
     notFound();

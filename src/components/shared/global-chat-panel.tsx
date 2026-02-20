@@ -137,7 +137,7 @@ function getTabLabelFromPathname(pathname: string): string {
 // ─── Panel ──────────────────────────────────────────────────────────────────
 
 export function GlobalChatPanel() {
-  const { state, tabState, closeChat, registerContextHandler, addTab, closeTab, switchTab, renameTab } = useGlobalChat();
+  const { state, tabState, closeChat, registerContextHandler, addTab, closeTab, switchTab, renameTab, replaceCurrentTab } = useGlobalChat();
   const [contexts, setContexts] = useState<InlineContext[]>([]);
   const prevContextKeyRef = useRef<string | null>(null);
   const pathname = usePathname();
@@ -148,6 +148,41 @@ export function GlobalChatPanel() {
   // and causes hydration mismatches.
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
+
+  // ── Ghost conversation history ──────────────────────────────────────
+  const [ghostHistory, setGhostHistory] = useState<{ contextKey: string; title: string; updatedAt: string }[]>([]);
+  useEffect(() => {
+    fetch("/api/ai/chat-history?list=ghost")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.conversations) {
+          setGhostHistory(
+            data.conversations.map((c: any) => ({
+              contextKey: c.contextKey,
+              title: c.title,
+              updatedAt: c.updatedAt,
+            }))
+          );
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleLoadHistory = useCallback(
+    (contextKey: string, title: string) => {
+      const tabId = contextKey.split("::")[1];
+      if (!tabId) return;
+      // If a tab with this ID already exists, just switch to it
+      const existing = tabState.tabs.find((t) => t.id === tabId);
+      if (existing) {
+        switchTab(tabId);
+        return;
+      }
+      // Replace the current (empty) tab with the history conversation
+      replaceCurrentTab(tabId, title);
+    },
+    [tabState.tabs, switchTab, replaceCurrentTab]
+  );
 
   // ── Resizable width ────────────────────────────────────────────────────
   const DEFAULT_PANEL_WIDTH = 380;
@@ -366,10 +401,8 @@ export function GlobalChatPanel() {
       {/* Resize drag handle */}
       <div
         onMouseDown={handleResizeStart}
-        className="hidden sm:flex shrink-0 w-1 cursor-col-resize items-center justify-center hover:bg-foreground/10 active:bg-foreground/15 transition-colors group/resize"
-      >
-        <div className="w-[2px] h-8 rounded-full bg-border group-hover/resize:bg-foreground/20 group-active/resize:bg-foreground/30 transition-colors" />
-      </div>
+        className="hidden sm:flex shrink-0 w-1 cursor-col-resize hover:bg-foreground/10 active:bg-foreground/15 transition-colors"
+      />
 
       {/* Panel content */}
       <div className="flex-1 min-w-0 flex flex-col">
@@ -378,10 +411,10 @@ export function GlobalChatPanel() {
         type="button"
         onClick={closeChat}
         className={cn(
-          "absolute -left-5 top-1/2 -translate-y-1/2 z-10",
-          "flex items-center justify-center",
-          "w-5 h-8 rounded-l-full",
-          "bg-background border border-r-0 border-border",
+          "absolute -left-6 top-1/2 -translate-y-1/2 z-10",
+          "flex items-center justify-center pl-1 pr-0.5",
+          "w-6 h-10 rounded-l-full",
+          "bg-background border border-r-0 border-border/15",
           "text-muted-foreground hover:text-foreground",
           "cursor-pointer transition-all duration-200",
           !state.isOpen && "hidden"
@@ -407,7 +440,7 @@ export function GlobalChatPanel() {
 
       {/* Tab bar */}
       <div className="shrink-0 flex items-center px-1.5">
-        <div className="flex items-center gap-0.5 flex-1 min-w-0 overflow-x-auto">
+        <div className="flex items-center gap-0.5 flex-1 min-w-0 overflow-x-auto no-scrollbar">
           {tabState.tabs.map((tab) => (
             <button
               key={tab.id}
@@ -495,6 +528,8 @@ export function GlobalChatPanel() {
               onFetchFileContent={repoFileSearch ? handleFetchFileContent : undefined}
               hashMentionPrFiles={mentionableFiles}
               autoFocus={isActive}
+              historyItems={ghostHistory}
+              onLoadHistory={handleLoadHistory}
             />
           </div>
         );

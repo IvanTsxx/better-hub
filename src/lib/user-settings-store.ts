@@ -1,50 +1,4 @@
-import Database from "better-sqlite3";
-
-const DB_PATH = process.env.GITHUB_SYNC_DB_PATH ?? "./better-github.db";
-
-const globalForSettingsDb = globalThis as typeof globalThis & {
-  __settingsDb?: Database.Database;
-  __settingsSchemaReady?: boolean;
-};
-
-function getDb(): Database.Database {
-  if (!globalForSettingsDb.__settingsDb) {
-    const db = new Database(DB_PATH);
-    db.pragma("journal_mode = WAL");
-    db.pragma("busy_timeout = 5000");
-    globalForSettingsDb.__settingsDb = db;
-  }
-  ensureSchema(globalForSettingsDb.__settingsDb);
-  return globalForSettingsDb.__settingsDb;
-}
-
-function ensureSchema(db: Database.Database) {
-  if (globalForSettingsDb.__settingsSchemaReady) return;
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS user_settings (
-      user_id TEXT PRIMARY KEY,
-      display_name TEXT,
-      theme TEXT NOT NULL DEFAULT 'system',
-      color_theme TEXT NOT NULL DEFAULT 'midnight',
-      ghost_model TEXT NOT NULL DEFAULT 'moonshotai/kimi-k2.5',
-      use_own_api_key INTEGER NOT NULL DEFAULT 0,
-      openrouter_api_key TEXT,
-      updated_at TEXT NOT NULL
-    );
-  `);
-
-  // Migration: add color_theme column if missing
-  try {
-    db.exec(`ALTER TABLE user_settings ADD COLUMN color_theme TEXT NOT NULL DEFAULT 'midnight'`);
-  } catch {
-    // column already exists
-  }
-
-  globalForSettingsDb.__settingsSchemaReady = true;
-}
-
-// --- Interfaces ---
+import { prisma } from "./db";
 
 export interface UserSettings {
   userId: string;
@@ -54,97 +8,107 @@ export interface UserSettings {
   ghostModel: string;
   useOwnApiKey: boolean;
   openrouterApiKey: string | null;
+  githubPat: string | null;
+  codeThemeLight: string;
+  codeThemeDark: string;
+  codeFont: string;
+  codeFontSize: number;
   updatedAt: string;
 }
 
-interface UserSettingsRow {
-  user_id: string;
-  display_name: string | null;
+function toSettings(row: {
+  userId: string;
+  displayName: string | null;
   theme: string;
-  color_theme: string;
-  ghost_model: string;
-  use_own_api_key: number;
-  openrouter_api_key: string | null;
-  updated_at: string;
-}
-
-function rowToSettings(row: UserSettingsRow): UserSettings {
+  colorTheme: string;
+  ghostModel: string;
+  useOwnApiKey: boolean;
+  openrouterApiKey: string | null;
+  githubPat: string | null;
+  codeThemeLight: string;
+  codeThemeDark: string;
+  codeFont: string;
+  codeFontSize: number;
+  updatedAt: string;
+}): UserSettings {
   return {
-    userId: row.user_id,
-    displayName: row.display_name,
+    userId: row.userId,
+    displayName: row.displayName,
     theme: row.theme,
-    colorTheme: row.color_theme,
-    ghostModel: row.ghost_model,
-    useOwnApiKey: row.use_own_api_key === 1,
-    openrouterApiKey: row.openrouter_api_key,
-    updatedAt: row.updated_at,
+    colorTheme: row.colorTheme,
+    ghostModel: row.ghostModel,
+    useOwnApiKey: row.useOwnApiKey,
+    openrouterApiKey: row.openrouterApiKey,
+    githubPat: row.githubPat,
+    codeThemeLight: row.codeThemeLight ?? "vitesse-light",
+    codeThemeDark: row.codeThemeDark ?? "vitesse-black",
+    codeFont: row.codeFont ?? "default",
+    codeFontSize: row.codeFontSize ?? 13,
+    updatedAt: row.updatedAt,
   };
 }
 
-// --- CRUD ---
-
-export function getUserSettings(userId: string): UserSettings {
-  const db = getDb();
+export async function getUserSettings(userId: string): Promise<UserSettings> {
   const now = new Date().toISOString();
 
-  db.prepare(
-    `INSERT OR IGNORE INTO user_settings (user_id, updated_at) VALUES (?, ?)`
-  ).run(userId, now);
+  const row = await prisma.userSettings.upsert({
+    where: { userId },
+    create: { userId, updatedAt: now },
+    update: {},
+  });
 
-  const row = db
-    .prepare(`SELECT * FROM user_settings WHERE user_id = ?`)
-    .get(userId) as UserSettingsRow;
-
-  return rowToSettings(row);
+  return toSettings(row);
 }
 
-export function updateUserSettings(
+export async function updateUserSettings(
   userId: string,
   updates: Partial<
     Pick<
       UserSettings,
-      "displayName" | "theme" | "colorTheme" | "ghostModel" | "useOwnApiKey" | "openrouterApiKey"
+      | "displayName"
+      | "theme"
+      | "colorTheme"
+      | "ghostModel"
+      | "useOwnApiKey"
+      | "openrouterApiKey"
+      | "githubPat"
+      | "codeThemeLight"
+      | "codeThemeDark"
+      | "codeFont"
+      | "codeFontSize"
     >
   >
-): UserSettings {
-  const db = getDb();
+): Promise<UserSettings> {
   const now = new Date().toISOString();
 
-  // Ensure row exists
-  db.prepare(
-    `INSERT OR IGNORE INTO user_settings (user_id, updated_at) VALUES (?, ?)`
-  ).run(userId, now);
+  await prisma.userSettings.upsert({
+    where: { userId },
+    create: { userId, updatedAt: now },
+    update: {},
+  });
 
-  const fieldMap: Record<string, string> = {
-    displayName: "display_name",
-    theme: "theme",
-    colorTheme: "color_theme",
-    ghostModel: "ghost_model",
-    useOwnApiKey: "use_own_api_key",
-    openrouterApiKey: "openrouter_api_key",
-  };
+  const data: Record<string, unknown> = { updatedAt: now };
 
-  const setClauses: string[] = ["updated_at = ?"];
-  const values: unknown[] = [now];
+  if (updates.displayName !== undefined) data.displayName = updates.displayName;
+  if (updates.theme !== undefined) data.theme = updates.theme;
+  if (updates.colorTheme !== undefined) data.colorTheme = updates.colorTheme;
+  if (updates.ghostModel !== undefined) data.ghostModel = updates.ghostModel;
+  if (updates.useOwnApiKey !== undefined) data.useOwnApiKey = updates.useOwnApiKey;
+  if (updates.openrouterApiKey !== undefined) data.openrouterApiKey = updates.openrouterApiKey;
+  if (updates.githubPat !== undefined) data.githubPat = updates.githubPat;
+  if (updates.codeThemeLight !== undefined) data.codeThemeLight = updates.codeThemeLight;
+  if (updates.codeThemeDark !== undefined) data.codeThemeDark = updates.codeThemeDark;
+  if (updates.codeFont !== undefined) data.codeFont = updates.codeFont;
+  if (updates.codeFontSize !== undefined) data.codeFontSize = updates.codeFontSize;
 
-  for (const [key, col] of Object.entries(fieldMap)) {
-    if (key in updates) {
-      setClauses.push(`${col} = ?`);
-      const val = updates[key as keyof typeof updates];
-      values.push(key === "useOwnApiKey" ? (val ? 1 : 0) : val);
-    }
-  }
+  const updated = await prisma.userSettings.update({
+    where: { userId },
+    data,
+  });
 
-  values.push(userId);
-
-  db.prepare(
-    `UPDATE user_settings SET ${setClauses.join(", ")} WHERE user_id = ?`
-  ).run(...values);
-
-  return getUserSettings(userId);
+  return toSettings(updated);
 }
 
-export function deleteUserSettings(userId: string): void {
-  const db = getDb();
-  db.prepare(`DELETE FROM user_settings WHERE user_id = ?`).run(userId);
+export async function deleteUserSettings(userId: string): Promise<void> {
+  await prisma.userSettings.delete({ where: { userId } }).catch(() => {});
 }

@@ -5,24 +5,26 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
+  ArrowRight,
   GitPullRequest,
   Sparkles,
   Check,
   X,
   Trash2,
   Loader2,
-  RotateCcw,
-  Play,
   AlertCircle,
+  Ghost,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ClientMarkdown } from "@/components/shared/client-markdown";
 import { TimeAgo } from "@/components/ui/time-ago";
+import { useGlobalChat } from "@/components/shared/global-chat-provider";
 import {
   acceptPromptRequest,
   rejectPromptRequest,
   resetPromptRequest,
   deletePromptRequestAction,
+  linkGhostTab,
 } from "@/app/(app)/repos/[owner]/[repo]/prompts/actions";
 import type { PromptRequest, PromptRequestStatus } from "@/lib/prompt-request-store";
 
@@ -40,6 +42,15 @@ const statusLabels: Record<PromptRequestStatus, string> = {
   rejected: "Rejected",
 };
 
+const PROCESSING_PHRASES = [
+  "Haunting the codebase",
+  "Phasing through files",
+  "Summoning changes",
+  "Channeling commits",
+  "Conjuring a branch",
+  "Whispering to the sandbox",
+];
+
 interface PromptDetailProps {
   owner: string;
   repo: string;
@@ -48,15 +59,30 @@ interface PromptDetailProps {
 
 export function PromptDetail({ owner, repo, promptRequest }: PromptDetailProps) {
   const router = useRouter();
+  const { openChat, addTab, switchTab, tabState, state: chatState, setWorkingSource } = useGlobalChat();
   const [isAccepting, setIsAccepting] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [error, setError] = useState<string | null>(promptRequest.errorMessage);
+  const [justCompleted, setJustCompleted] = useState(false);
+  const prevStatusRef = useRef(promptRequest.status);
+  // Track the linked ghost tab ID locally (server prop can be stale)
+  const linkedTabIdRef = useRef<string | null>(promptRequest.ghostTabId)
+  // Keep ref in sync when server prop updates (e.g. after polling refresh)
+  useEffect(() => {
+    if (promptRequest.ghostTabId) linkedTabIdRef.current = promptRequest.ghostTabId;
+  }, [promptRequest.ghostTabId]);
 
   // Poll for status changes while processing
   const isProcessing = promptRequest.status === "processing";
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Signal to global context that a prompt is being processed (drives Ghost icon animation)
+  useEffect(() => {
+    setWorkingSource("prompt-processing", isProcessing);
+    return () => setWorkingSource("prompt-processing", false);
+  }, [isProcessing, setWorkingSource]);
 
   useEffect(() => {
     if (isProcessing) {
@@ -69,39 +95,80 @@ export function PromptDetail({ owner, repo, promptRequest }: PromptDetailProps) 
     };
   }, [isProcessing, router]);
 
-  const startProcessing = async (id: string) => {
-    setError(null);
-    const res = await fetch("/api/ai/prompt-process", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ promptRequestId: id }),
-    });
-    if (!res.ok) {
-      const data = await res.json();
-      setError(data.error || "Failed to start processing");
+  // Detect transition from processing → completed and auto-navigate to PR
+  useEffect(() => {
+    if (
+      prevStatusRef.current === "processing" &&
+      promptRequest.status === "completed" &&
+      promptRequest.prNumber
+    ) {
+      setJustCompleted(true);
+      const timer = setTimeout(() => {
+        router.push(`/${owner}/${repo}/pulls/${promptRequest.prNumber}`);
+      }, 3000);
+      return () => clearTimeout(timer);
     }
+    prevStatusRef.current = promptRequest.status;
+  }, [promptRequest.status, promptRequest.prNumber, owner, repo, router]);
+
+  // Animated processing phrase
+  const [phraseIdx, setPhraseIdx] = useState(
+    () => Math.floor(Math.random() * PROCESSING_PHRASES.length)
+  );
+  useEffect(() => {
+    if (!isProcessing) return;
+    const interval = setInterval(() => {
+      setPhraseIdx((i) => (i + 1) % PROCESSING_PHRASES.length);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [isProcessing]);
+
+  const chatConfig = {
+    chatType: "general" as const,
+    contextKey: `${owner}/${repo}`,
+    contextBody: {},
+    placeholder: "Chat with Ghost about this prompt...",
+    emptyTitle: `Prompt: ${promptRequest.title}`,
+    emptyDescription: "Ghost will process this prompt request.",
+  };
+
+  const openGhostWithPrompt = () => {
+    const existingTabId = linkedTabIdRef.current;
+    const tabExists = existingTabId && tabState.tabs.some((t) => t.id === existingTabId);
+
+    if (tabExists) {
+      // Switch to the existing tab that's already running this prompt
+      switchTab(existingTabId);
+      openChat(chatConfig);
+      return;
+    }
+
+    // Create a new tab and link it to this prompt request
+    const tabId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    linkedTabIdRef.current = tabId;
+    addTab(`Prompt · ${repo}`, tabId);
+    linkGhostTab(promptRequest.id, tabId);
+    openChat(chatConfig);
+    // Auto-send the prompt after Ghost panel mounts
+    setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent("ghost-auto-send", {
+          detail: {
+            message: `Process this prompt request and create a PR for ${owner}/${repo}:\n\n**${promptRequest.title}**\n\n${promptRequest.body}\n\nPrompt Request ID: ${promptRequest.id}\n\nAfter creating the PR, call completePromptRequest with the prompt request ID and PR number.`,
+          },
+        })
+      );
+    }, 800);
   };
 
   const handleAccept = async () => {
     setIsAccepting(true);
     try {
       await acceptPromptRequest(promptRequest.id);
-      await startProcessing(promptRequest.id);
       router.refresh();
+      openGhostWithPrompt();
     } catch (e: any) {
       setError(e.message || "Failed to accept");
-      setIsAccepting(false);
-    }
-  };
-
-  const handleResume = async () => {
-    setIsAccepting(true);
-    try {
-      await startProcessing(promptRequest.id);
-      router.refresh();
-    } catch (e: any) {
-      setError(e.message || "Failed to resume");
-    } finally {
       setIsAccepting(false);
     }
   };
@@ -139,6 +206,7 @@ export function PromptDetail({ owner, repo, promptRequest }: PromptDetailProps) 
   };
 
   const isOpen = promptRequest.status === "open";
+  const isCompleted = promptRequest.status === "completed";
 
   return (
     <div className="p-4 space-y-6 max-w-3xl">
@@ -150,6 +218,28 @@ export function PromptDetail({ owner, repo, promptRequest }: PromptDetailProps) 
         <ArrowLeft className="w-3 h-3" />
         Back to prompts
       </Link>
+
+      {/* Just-completed banner — auto-navigates to PR */}
+      {justCompleted && promptRequest.prNumber && (
+        <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-purple-500/10 border border-purple-500/20 animate-in fade-in slide-in-from-top-2 duration-300">
+          <Check className="w-4 h-4 text-purple-400 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-purple-300">
+              PR #{promptRequest.prNumber} created
+            </p>
+            <p className="text-[11px] text-purple-400/60 font-mono mt-0.5">
+              Redirecting to pull request...
+            </p>
+          </div>
+          <Link
+            href={`/${owner}/${repo}/pulls/${promptRequest.prNumber}`}
+            className="flex items-center gap-1 text-xs font-medium text-purple-400 hover:text-purple-300 transition-colors"
+          >
+            View PR
+            <ArrowRight className="w-3 h-3" />
+          </Link>
+        </div>
+      )}
 
       {/* Header */}
       <div className="space-y-3">
@@ -180,20 +270,78 @@ export function PromptDetail({ owner, repo, promptRequest }: PromptDetailProps) 
           </div>
         </div>
 
-        {/* Linked PR */}
-        {promptRequest.prNumber && (
+        {/* Linked PR — prominent when completed */}
+        {promptRequest.prNumber && !justCompleted && (
           <Link
             href={`/${owner}/${repo}/pulls/${promptRequest.prNumber}`}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono text-purple-400 bg-purple-500/10 rounded-md hover:bg-purple-500/15 transition-colors"
+            className={cn(
+              "inline-flex items-center gap-2 rounded-md transition-colors",
+              isCompleted
+                ? "px-4 py-2.5 text-sm font-medium text-purple-300 bg-purple-500/10 border border-purple-500/20 hover:bg-purple-500/15"
+                : "px-3 py-1.5 text-xs font-mono text-purple-400 bg-purple-500/10 hover:bg-purple-500/15"
+            )}
           >
-            <GitPullRequest className="w-3.5 h-3.5" />
-            Pull Request #{promptRequest.prNumber}
+            <GitPullRequest className={cn(isCompleted ? "w-4 h-4" : "w-3.5 h-3.5")} />
+            {isCompleted ? (
+              <>
+                Completed — View Pull Request #{promptRequest.prNumber}
+                <ArrowRight className="w-3.5 h-3.5 ml-1" />
+              </>
+            ) : (
+              <>Pull Request #{promptRequest.prNumber}</>
+            )}
           </Link>
         )}
       </div>
 
+      {/* Processing state */}
+      {isProcessing && (
+        <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-4">
+          <div className="flex items-center gap-3">
+            <div className="ghost-thinking-float">
+              <Ghost className="w-5 h-5 text-yellow-400/70" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-yellow-300/90">
+                Ghost is working on this
+              </p>
+              <p className="text-[11px] font-mono text-yellow-400/50 mt-0.5 transition-all duration-300">
+                {promptRequest.progress || `${PROCESSING_PHRASES[phraseIdx]}...`}
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {(!chatState.isOpen || tabState.activeTabId !== linkedTabIdRef.current) && (
+                <button
+                  onClick={openGhostWithPrompt}
+                  className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium bg-yellow-500/10 text-yellow-400/70 rounded-md hover:bg-yellow-500/15 hover:text-yellow-400 transition-colors cursor-pointer"
+                >
+                  <Ghost className="w-3 h-3" />
+                  {chatState.isOpen ? "Show Ghost" : "Open Ghost"}
+                </button>
+              )}
+              <button
+                onClick={handleReset}
+                disabled={isResetting}
+                className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium bg-red-500/10 text-red-400/70 rounded-md hover:bg-red-500/15 hover:text-red-400 transition-colors disabled:opacity-50 cursor-pointer"
+                title="Cancel processing"
+              >
+                {isResetting ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <X className="w-3 h-3" />
+                )}
+                Cancel
+              </button>
+            </div>
+          </div>
+          <p className="text-[10px] text-yellow-400/30 font-mono mt-3">
+            This prompt is locked while Ghost processes it. Other users cannot accept it.
+          </p>
+        </div>
+      )}
+
       {/* Error message */}
-      {(error || promptRequest.errorMessage) && (
+      {(error || promptRequest.errorMessage) && !isProcessing && (
         <div className="flex items-start gap-2 px-3 py-2.5 rounded-md bg-red-500/10 border border-red-500/20">
           <AlertCircle className="w-3.5 h-3.5 text-red-400 mt-0.5 shrink-0" />
           <p className="text-xs text-red-400/90 font-mono leading-relaxed">
@@ -214,7 +362,7 @@ export function PromptDetail({ owner, repo, promptRequest }: PromptDetailProps) 
             <button
               onClick={handleAccept}
               disabled={isAccepting}
-              className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-green-600 text-white rounded-md hover:bg-green-500 transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-green-600 text-white rounded-md hover:bg-green-500 transition-colors disabled:opacity-50 cursor-pointer"
             >
               {isAccepting ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -226,7 +374,7 @@ export function PromptDetail({ owner, repo, promptRequest }: PromptDetailProps) 
             <button
               onClick={handleReject}
               disabled={isRejecting}
-              className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-muted text-muted-foreground rounded-md hover:bg-muted/80 transition-colors disabled:opacity-50"
+              className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium bg-muted text-muted-foreground rounded-md hover:bg-muted/80 transition-colors disabled:opacity-50 cursor-pointer"
             >
               {isRejecting ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -237,51 +385,21 @@ export function PromptDetail({ owner, repo, promptRequest }: PromptDetailProps) 
             </button>
           </>
         )}
-        {isProcessing && (
-          <>
-            <div className="flex items-center gap-2 text-xs text-yellow-400 font-mono">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              Ghost is processing in the background...
-            </div>
-            <button
-              onClick={handleResume}
-              disabled={isAccepting}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-muted text-muted-foreground rounded-md hover:bg-muted/80 transition-colors disabled:opacity-50"
-            >
-              {isAccepting ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Play className="w-3.5 h-3.5" />
-              )}
-              Retry
-            </button>
-            <button
-              onClick={handleReset}
-              disabled={isResetting}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-muted text-muted-foreground rounded-md hover:bg-muted/80 transition-colors disabled:opacity-50"
-            >
-              {isResetting ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <RotateCcw className="w-3.5 h-3.5" />
-              )}
-              Reset
-            </button>
-          </>
-        )}
         <div className="flex-1" />
-        <button
-          onClick={handleDelete}
-          disabled={isDeleting}
-          className="flex items-center gap-1.5 px-3 py-2 text-xs text-red-400/60 hover:text-red-400 transition-colors disabled:opacity-50"
-        >
-          {isDeleting ? (
-            <Loader2 className="w-3 h-3 animate-spin" />
-          ) : (
-            <Trash2 className="w-3 h-3" />
-          )}
-          Delete
-        </button>
+        {!isProcessing && (
+          <button
+            onClick={handleDelete}
+            disabled={isDeleting}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs text-red-400/60 hover:text-red-400 transition-colors disabled:opacity-50 cursor-pointer"
+          >
+            {isDeleting ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <Trash2 className="w-3 h-3" />
+            )}
+            Delete
+          </button>
+        )}
       </div>
     </div>
   );

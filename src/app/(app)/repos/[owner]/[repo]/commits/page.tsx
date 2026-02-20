@@ -1,4 +1,4 @@
-import { getRepoCommits, getRepo } from "@/lib/github";
+import { getRepoCommits, getRepo, getRepoBranches } from "@/lib/github";
 import { CommitsList } from "@/components/repo/commits-list";
 
 export default async function CommitsPage({
@@ -7,9 +7,10 @@ export default async function CommitsPage({
   params: Promise<{ owner: string; repo: string }>;
 }) {
   const { owner, repo } = await params;
-  const [repoData, commits] = await Promise.all([
+  const [repoData, commits, branches] = await Promise.all([
     getRepo(owner, repo),
     getRepoCommits(owner, repo),
+    getRepoBranches(owner, repo),
   ]);
   if (!repoData) return null;
   return (
@@ -18,6 +19,7 @@ export default async function CommitsPage({
       repo={repo}
       commits={commits as any}
       defaultBranch={repoData.default_branch}
+      branches={(branches as any) ?? []}
     />
   );
 }

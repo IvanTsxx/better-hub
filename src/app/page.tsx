@@ -79,6 +79,27 @@ export default function LoginPage() {
               <br />
               collaboration.
             </h1>
+            <svg
+              viewBox="0 0 320 20"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              className="w-72 mt-2"
+            >
+              <path
+                d="M2 16 C100 13, 200 8, 318 2"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+                className="text-foreground/25"
+              />
+              <path
+                d="M2 18 C80 15, 180 9, 318 4"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+                className="text-foreground/25"
+              />
+            </svg>
             <p className="text-foreground/55 text-sm leading-relaxed mt-4 max-w-sm">
               A better place to collaborate on code — for humans
               and agents.
@@ -107,13 +128,13 @@ export default function LoginPage() {
               <div className="rounded-lg border border-foreground/6 overflow-hidden shadow-xl shadow-black/10 opacity-70">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src="/dash2-light.png"
+                  src="/dash2.png"
                   alt="Repository view"
                   className="w-full h-auto block dark:hidden"
                 />
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src="/dash2.png"
+                  src="/dash2-light.png"
                   alt="Repository view"
                   className="w-full h-auto hidden dark:block"
                 />
@@ -125,13 +146,13 @@ export default function LoginPage() {
               <div className="rounded-lg border border-foreground/8 overflow-hidden shadow-2xl shadow-black/20">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src="/dash1-light.png"
+                  src="/dash1.png"
                   alt="Dashboard preview"
                   className="w-full h-auto block dark:hidden"
                 />
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src="/dash1.png"
+                  src="/dash1-light.png"
                   alt="Dashboard preview"
                   className="w-full h-auto hidden dark:block"
                 />

@@ -1,12 +1,12 @@
-import { getIssue, getIssueComments, getAuthenticatedUser, getRepo, getLinkedPullRequests } from "@/lib/github";
+import { getIssue, getIssueComments, getRepo, getLinkedPullRequests, getAuthenticatedUser } from "@/lib/github";
 import { extractParticipants } from "@/lib/github-utils";
 import { IssueHeader } from "@/components/issue/issue-header";
 import { IssueDetailLayout } from "@/components/issue/issue-detail-layout";
 import { ChatPageActivator } from "@/components/shared/chat-page-activator";
 import { IssueConversation, type IssueTimelineEntry } from "@/components/issue/issue-conversation";
 import { IssueCommentForm } from "@/components/issue/issue-comment-form";
-import { MarkdownRenderer } from "@/components/shared/markdown-renderer";
-import { ReactionDisplay } from "@/components/shared/reaction-display";
+import { IssueSidebar } from "@/components/issue/issue-sidebar";
+import { IssueParticipants } from "@/components/issue/issue-participants";
 import { TrackView } from "@/components/shared/track-view";
 import { auth } from "@/lib/auth";
 import { headers } from "next/headers";
@@ -20,12 +20,12 @@ export default async function IssueDetailPage({
   const { owner, repo, number: numStr } = await params;
   const issueNumber = parseInt(numStr, 10);
 
-  const [issue, comments, currentUser, repoData, linkedPRs] = await Promise.all([
+  const [issue, comments, repoData, linkedPRs, currentUser] = await Promise.all([
     getIssue(owner, repo, issueNumber),
     getIssueComments(owner, repo, issueNumber),
-    getAuthenticatedUser(),
     getRepo(owner, repo),
     getLinkedPullRequests(owner, repo, issueNumber),
+    getAuthenticatedUser(),
   ]);
 
   if (!issue) {
@@ -73,8 +73,16 @@ export default async function IssueDetailPage({
     createdAt: c.created_at,
   }));
 
-  // Build timeline for the conversation panel (comments only, issue body is on the left)
-  const timeline: IssueTimelineEntry[] = (comments || []).map((c: any) => ({
+  // Build timeline: issue body as first entry, then comments
+  const descriptionEntry: IssueTimelineEntry = {
+    type: "description",
+    id: "description",
+    user: issue.user,
+    body: issue.body || "",
+    created_at: issue.created_at,
+    reactions: (issue as any).reactions ?? undefined,
+  };
+  const commentEntries: IssueTimelineEntry[] = (comments || []).map((c: any) => ({
     type: "comment" as const,
     id: c.id,
     user: c.user,
@@ -83,8 +91,7 @@ export default async function IssueDetailPage({
     author_association: c.author_association,
     reactions: c.reactions ?? undefined,
   }));
-
-  // Extract participants for @mention autocomplete
+  // Extract participants
   const participants = extractParticipants([
     issue.user ? { login: issue.user.login, avatar_url: issue.user.avatar_url } : null,
     ...(comments || []).map((c: any) =>
@@ -119,24 +126,16 @@ export default async function IssueDetailPage({
           linkedPRs={linkedPRs}
         />
       }
-      issueBody={
-        <div className="px-1">
-          {issue.body ? (
-            <MarkdownRenderer content={issue.body} />
-          ) : (
-            <p className="text-xs text-muted-foreground/50 italic py-4">
-              No description provided.
-            </p>
-          )}
-          {(issue as any).reactions && (issue as any).reactions.total_count > 0 && (
-            <div className="mt-3">
-              <ReactionDisplay reactions={(issue as any).reactions} />
-            </div>
-          )}
-        </div>
+      description={
+        <IssueConversation entries={[descriptionEntry]} owner={owner} repo={repo} issueNumber={issueNumber} />
+      }
+      panelHeader={
+        <IssueParticipants participants={participants} />
       }
       conversationPanel={
-        <IssueConversation entries={timeline} owner={owner} repo={repo} issueNumber={issueNumber} />
+        commentEntries.length > 0
+          ? <IssueConversation entries={commentEntries} owner={owner} repo={repo} issueNumber={issueNumber} />
+          : <div className="flex items-center justify-center py-8 text-[11px] font-mono text-muted-foreground/30">No comments yet</div>
       }
       commentForm={
         <IssueCommentForm
@@ -144,12 +143,20 @@ export default async function IssueDetailPage({
           repo={repo}
           issueNumber={issueNumber}
           issueState={issue.state}
-          userAvatarUrl={currentUser?.avatar_url}
-          userName={currentUser?.login}
+          userAvatarUrl={(currentUser as any)?.avatar_url}
+          userName={(currentUser as any)?.login}
           participants={participants}
         />
       }
-      commentsCount={issue.comments}
+      sidebar={
+        <IssueSidebar
+          assignees={((issue as any).assignees || []).map((a: any) => ({
+            login: a.login,
+            avatar_url: a.avatar_url,
+          }))}
+          milestone={(issue.milestone as any)?.title ?? null}
+        />
+      }
     />
     <ChatPageActivator
       config={{
@@ -168,6 +175,7 @@ export default async function IssueDetailPage({
           },
         },
         suggestions: [
+          "Create a prompt request for this issue",
           "Summarize this issue",
           "Suggest a fix",
           "Draft a response",
@@ -176,7 +184,7 @@ export default async function IssueDetailPage({
         placeholder: "Ask Ghost about this issue...",
         emptyTitle: "Ghost",
         emptyDescription:
-          "Ask questions, get help drafting responses, or create a PR to fix this issue",
+          "Create a prompt request, get help drafting responses, or have Ghost fix this issue",
         repoFileSearch: repoData ? { owner, repo, ref: repoData.default_branch } : undefined,
       }}
     />

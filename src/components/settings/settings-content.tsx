@@ -1,16 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import { Settings, Bot, CreditCard, User } from "lucide-react";
+import { Settings, Bot, CreditCard, User, Code2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { GeneralTab } from "./tabs/general-tab";
 import { AIModelTab } from "./tabs/ai-model-tab";
 import { BillingTab } from "./tabs/billing-tab";
 import { AccountTab } from "./tabs/account-tab";
+import { EditorTab } from "./tabs/editor-tab";
 import type { UserSettings } from "@/lib/user-settings-store";
 
 const TABS = [
   { id: "general", label: "General", icon: Settings },
+  { id: "editor", label: "Editor", icon: Code2 },
   { id: "ai", label: "AI / Model", icon: Bot },
   { id: "billing", label: "Billing", icon: CreditCard },
   { id: "account", label: "Account", icon: User },
@@ -78,12 +80,18 @@ export function SettingsContent({
         {activeTab === "general" && (
           <GeneralTab settings={settings} onUpdate={handleUpdate} />
         )}
+        {activeTab === "editor" && <EditorTab />}
         {activeTab === "ai" && (
           <AIModelTab settings={settings} onUpdate={handleUpdate} />
         )}
         {activeTab === "billing" && <BillingTab />}
         {activeTab === "account" && (
-          <AccountTab user={user} connectedAccounts={connectedAccounts} />
+          <AccountTab
+            user={user}
+            connectedAccounts={connectedAccounts}
+            settings={settings}
+            onUpdate={handleUpdate}
+          />
         )}
       </div>
     </div>

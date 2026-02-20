@@ -5,6 +5,7 @@ import {
   getOrCreateConversation,
   saveMessage,
   deleteConversation,
+  listGhostConversations,
 } from "@/lib/chat-store";
 
 async function getSessionUserId(): Promise<string | null> {
@@ -21,13 +22,20 @@ export async function GET(req: Request) {
   }
 
   const { searchParams } = new URL(req.url);
+
+  // List recent ghost conversations
+  if (searchParams.get("list") === "ghost") {
+    const conversations = await listGhostConversations(userId);
+    return Response.json({ conversations });
+  }
+
   const contextKey = searchParams.get("contextKey");
 
   if (!contextKey) {
     return Response.json({ error: "contextKey required" }, { status: 400 });
   }
 
-  const result = getConversation(userId, contextKey);
+  const result = await getConversation(userId, contextKey);
   if (!result) {
     return Response.json({ conversation: null, messages: [] });
   }
@@ -50,8 +58,8 @@ export async function POST(req: Request) {
     );
   }
 
-  const conversation = getOrCreateConversation(userId, chatType, contextKey);
-  const saved = saveMessage(conversation.id, message);
+  const conversation = await getOrCreateConversation(userId, chatType, contextKey);
+  const saved = await saveMessage(conversation.id, message);
 
   return Response.json({ conversation, message: saved });
 }
@@ -72,6 +80,6 @@ export async function DELETE(req: Request) {
     );
   }
 
-  deleteConversation(conversationId);
+  await deleteConversation(conversationId);
   return Response.json({ success: true });
 }

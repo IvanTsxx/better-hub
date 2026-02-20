@@ -24,8 +24,23 @@ import {
   invalidateRepoIssuesCache,
   invalidateRepoPullRequestsCache,
 } from "@/lib/github";
+import Supermemory from "supermemory";
 
-export const maxDuration = 300;
+export const maxDuration = 900;
+
+// ─── Model Config ───────────────────────────────────────────────────────────
+// Central config for "auto" mode. Swap models here — no other changes needed.
+const GHOST_MODELS = {
+  default: process.env.GHOST_MODEL || "moonshotai/kimi-k2.5",
+  mergeConflict: process.env.GHOST_MERGE_MODEL || "google/gemini-2.5-pro-preview",
+} as const;
+
+type GhostTaskType = "default" | "mergeConflict";
+
+function resolveModel(userModel: string, task: GhostTaskType = "default"): string {
+  if (userModel !== "auto") return userModel;
+  return GHOST_MODELS[task] ?? GHOST_MODELS.default;
+}
 
 // ─── Safe tool wrapper ──────────────────────────────────────────────────────
 // Wraps all tool execute functions with try/catch so a single tool failure
@@ -49,6 +64,117 @@ function withSafeTools(tools: Record<string, any>): Record<string, any> {
     };
   }
   return wrapped;
+}
+
+// ─── Supermemory ─────────────────────────────────────────────────────────────
+
+function getSupermemoryClient(): Supermemory | null {
+  const apiKey = process.env.SUPER_MEMORY_API_KEY;
+  if (!apiKey) return null;
+  return new Supermemory({ apiKey });
+}
+
+function getMemoryTools(userId: string) {
+  const client = getSupermemoryClient();
+  if (!client) return {};
+
+  const containerTag = `user-${userId}`;
+
+  return {
+    saveMemory: tool({
+      description:
+        "Save important information the user wants you to remember for future conversations. Use this when the user says 'remember this', 'save this', 'keep in mind', or shares preferences, project context, or important facts they'd want recalled later.",
+      inputSchema: z.object({
+        content: z
+          .string()
+          .describe(
+            "The information to remember. Write it as a clear, standalone fact or preference. Include relevant context so it's useful later."
+          ),
+      }),
+      execute: async ({ content }) => {
+        await client.add({
+          content,
+          containerTag,
+          entityContext:
+            "This is a memory from a GitHub power-user using a GitHub client app called Better GitHub. Extract preferences, decisions, project context, and important facts the user wants remembered across conversations.",
+        });
+        return { saved: true };
+      },
+    }),
+
+    recallMemory: tool({
+      description:
+        "Search your memory for things the user previously asked you to remember. Use this when the user asks 'do you remember', 'what did I say about', or when context from past conversations would help answer their question.",
+      inputSchema: z.object({
+        query: z
+          .string()
+          .describe("Natural language search query for what to recall"),
+      }),
+      execute: async ({ query }) => {
+        const results = await client.search.memories({
+          q: query,
+          containerTag,
+          limit: 5,
+          searchMode: "hybrid",
+        });
+        if (!results.results || results.results.length === 0) {
+          return { memories: [], message: "No relevant memories found." };
+        }
+        return {
+          memories: results.results.map((r) => ({
+            content: r.memory || r.chunk || "",
+            score: r.similarity,
+          })),
+        };
+      },
+    }),
+  };
+}
+
+async function recallMemoriesForContext(
+  userId: string,
+  messages: UIMessage[]
+): Promise<string> {
+  const client = getSupermemoryClient();
+  if (!client) return "";
+
+  // Use the last user message as the search query
+  const lastUserMsg = [...messages]
+    .reverse()
+    .find((m) => m.role === "user");
+  if (!lastUserMsg) return "";
+
+  const query = lastUserMsg.parts
+    ?.filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")
+    .map((p) => p.text)
+    .join(" ") || "";
+
+  if (!query || query.length < 5) return "";
+
+  try {
+    const results = await client.search.memories({
+      q: query,
+      containerTag: `user-${userId}`,
+      limit: 3,
+      searchMode: "hybrid",
+    });
+
+    if (!results.results || results.results.length === 0) return "";
+
+    const memoryLines = results.results
+      .filter((r) => r.similarity > 0.3)
+      .map((r) => `- ${r.memory || r.chunk || ""}`)
+      .filter((line) => line !== "- ");
+
+    if (memoryLines.length === 0) return "";
+
+    return `\n\n## Recalled Memories
+The following are things the user previously asked you to remember. Use them as context if relevant:
+${memoryLines.join("\n")}`;
+  } catch (e) {
+    console.error("[Ghost] memory recall error:", e);
+    return "";
+  }
 }
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -90,6 +216,7 @@ interface PageContext {
 // ─── Tool Factories ─────────────────────────────────────────────────────────
 
 function getGeneralTools(octokit: Octokit, pageContext?: PageContext, userId?: string) {
+  let createdPromptRequest: { id: string; title: string; owner: string; repo: string; url: string } | null = null;
   return {
     searchRepos: tool({
       description:
@@ -1000,28 +1127,33 @@ Only GET requests are allowed. For mutations use the dedicated tools.`,
       }),
       execute: async ({ owner, repo, title, body }) => {
         if (!userId) return { error: "Not authenticated" };
-        const pr = createPromptRequestInDb(userId, owner, repo, title, body);
+        if (createdPromptRequest) {
+          return {
+            _clientAction: "openPromptRequests" as const,
+            success: true,
+            alreadyCreated: true,
+            ...createdPromptRequest,
+          };
+        }
+        const pr = await createPromptRequestInDb(userId, owner, repo, title, body);
+        createdPromptRequest = { id: pr.id, title: pr.title, owner, repo, url: `/${owner}/${repo}/prompts/${pr.id}` };
         return {
           _clientAction: "openPromptRequests" as const,
           success: true,
-          id: pr.id,
-          title: pr.title,
-          owner,
-          repo,
-          url: `/${owner}/${repo}/prompts/${pr.id}`,
+          ...createdPromptRequest,
         };
       },
     }),
 
     completePromptRequest: tool({
       description:
-        "Mark a prompt request as completed after creating a PR for it. Use after sandboxCreatePR or createPullRequest when processing a prompt request.",
+        "Mark a prompt request as completed after creating a PR for it. Use after createPullRequestFromBranch when processing a prompt request.",
       inputSchema: z.object({
         promptRequestId: z.string().describe("The prompt request ID to mark as completed"),
         prNumber: z.number().describe("The PR number that was created"),
       }),
       execute: async ({ promptRequestId, prNumber }) => {
-        updatePromptRequestStatus(promptRequestId, "completed", { prNumber });
+        await updatePromptRequestStatus(promptRequestId, "completed", { prNumber });
         return {
           _clientAction: "refreshPage" as const,
           success: true,
@@ -1040,11 +1172,11 @@ Only GET requests are allowed. For mutations use the dedicated tools.`,
         body: z.string().optional().describe("New body/instructions (omit to keep current)"),
       }),
       execute: async ({ promptRequestId, title, body }) => {
-        const existing = getPromptRequestFromDb(promptRequestId);
+        const existing = await getPromptRequestFromDb(promptRequestId);
         if (!existing) return { error: "Prompt request not found" };
         if (existing.status !== "open") return { error: "Can only edit open prompt requests" };
 
-        const updated = updatePromptRequestContent(promptRequestId, {
+        const updated = await updatePromptRequestContent(promptRequestId, {
           ...(title !== undefined ? { title } : {}),
           ...(body !== undefined ? { body } : {}),
         });
@@ -1060,7 +1192,9 @@ Only GET requests are allowed. For mutations use the dedicated tools.`,
   };
 }
 
-function getPrTools(octokit: Octokit, prContext: PRContext) {
+interface CommitAuthor { name: string; email: string }
+
+function getPrTools(octokit: Octokit, prContext: PRContext, commitAuthor?: CommitAuthor) {
   return {
     getFileContent: tool({
       description:
@@ -1122,7 +1256,8 @@ function getPrTools(octokit: Octokit, prContext: PRContext) {
             content: Buffer.from(content).toString("base64"),
             sha: (fileData as any).sha,
             branch: prContext.headBranch,
-          });
+            ...(commitAuthor ? { author: commitAuthor, committer: commitAuthor } : {}),
+          } as any);
 
           return {
             success: true,
@@ -1154,7 +1289,8 @@ function getPrTools(octokit: Octokit, prContext: PRContext) {
             message: commitMessage,
             content: Buffer.from(content).toString("base64"),
             branch: prContext.headBranch,
-          });
+            ...(commitAuthor ? { author: commitAuthor, committer: commitAuthor } : {}),
+          } as any);
 
           return {
             success: true,
@@ -1249,6 +1385,7 @@ function getPrTools(octokit: Octokit, prContext: PRContext) {
             message: commitMessage || originalMessage,
             tree: newTree.sha,
             parents: [parentSha],
+            ...(commitAuthor ? { author: { ...commitAuthor, date: new Date().toISOString() } } : {}),
           });
 
           // 6. Force-update the branch to point to the new commit
@@ -1279,7 +1416,8 @@ function getPrTools(octokit: Octokit, prContext: PRContext) {
 function getIssueTools(
   octokit: Octokit,
   issueContext: IssueContext,
-  defaultBranch: string
+  defaultBranch: string,
+  commitAuthor?: CommitAuthor
 ) {
   let workingBranch: string | null = null;
   const branchName = `fix/issue-${issueContext.issueNumber}`;
@@ -1364,7 +1502,8 @@ function getIssueTools(
             content: Buffer.from(content).toString("base64"),
             sha: (fileData as any).sha,
             branch: workingBranch,
-          });
+            ...(commitAuthor ? { author: commitAuthor, committer: commitAuthor } : {}),
+          } as any);
 
           return {
             success: true,
@@ -1416,7 +1555,8 @@ function getIssueTools(
             message: commitMessage,
             content: Buffer.from(content).toString("base64"),
             branch: workingBranch,
-          });
+            ...(commitAuthor ? { author: commitAuthor, committer: commitAuthor } : {}),
+          } as any);
 
           return {
             success: true,
@@ -1515,7 +1655,7 @@ function getSemanticSearchTool(userId: string) {
           const queryEmbedding = await embedText(query);
 
           // 2. Cosine similarity search (top 30 candidates)
-          const candidates = searchEmbeddings(userId, queryEmbedding, {
+          const candidates = await searchEmbeddings(userId, queryEmbedding, {
             owner,
             repo,
             topK: 30,
@@ -1689,9 +1829,22 @@ When asked to make changes:
 3. Write a clear, concise commit message
 4. If the user asks to amend, fix up, or add to the last commit, use amendCommit instead of editFile
 
+All commits are attributed to the signed-in user — never use your own identity (Ghost) as the commit author.
+
 Only use tools when the user explicitly asks you to make changes or commit something. For reviews and suggestions, just describe the changes in text.
 
-**For complex git operations** (cherry-pick, rebase, merge with conflicts, revert, bisect, squash, etc.), use the **sandbox tools** — startSandbox to clone the repo, then sandboxRun to execute git commands. NEVER say you can't do these operations.
+## Multi-file Commits (API-based)
+For changes spanning multiple files, use the API-based commit tools:
+- **stageFile**: Stage a file with its full content (one call per file)
+- **commitChanges**: Commit all staged files to a branch at once
+- **createPullRequestFromBranch**: Open a PR from the committed branch
+
+## Merge Conflict Resolution (API-based)
+For merge conflicts, use:
+- **getMergeConflictInfo**: See file differences between both branches
+- **commitMergeResolution**: Create a merge commit with resolved files
+
+**For complex git operations** (cherry-pick, rebase, bisect, etc.), use the **sandbox tools** — startSandbox to clone the repo, then sandboxRun to execute git commands. NEVER say you can't do these operations.
 
 ## General Tools
 You also have general GitHub tools (search repos, star, fork, list issues/PRs, navigate, comment, labels, assign, request reviewers, create branches, etc.). Use them when the user asks for things beyond this PR.
@@ -1705,6 +1858,9 @@ For any read-only query not covered by a specific tool, use queryGitHub to make 
 - "GET /repos/{owner}/{repo}/commits" with { owner, repo, per_page: 10 }
 - "GET /repos/{owner}/{repo}/contributors" with { owner, repo }
 This is very powerful — use it to answer almost any question about repos, users, orgs, etc.
+
+## Memory
+You have long-term memory via \`saveMemory\` and \`recallMemory\`. Use \`saveMemory\` when the user asks you to remember something — preferences, project context, decisions, or any fact they want persisted across conversations. Use \`recallMemory\` when the user asks "do you remember", "what did I say about", or when past context would help. Previously recalled memories (if any) are appended to this prompt — use them naturally without announcing them unless asked.
 
 ## Semantic Search (USE FIRST)
 **IMPORTANT:** When the user asks to find, list, or search for PRs/issues by topic or description (e.g. "find PRs about X", "list all PRs regarding Y", "any issues related to Z"), ALWAYS call **semanticSearch** FIRST before trying GitHub API tools. semanticSearch does natural language search across all content the user has previously viewed — it understands meaning, not just keywords. Only fall back to GitHub search/list tools if semanticSearch returns empty results.
@@ -1760,9 +1916,17 @@ When asked to make changes or fix the issue:
 2. Use editFile/createFile to make changes (automatically creates a branch)
 3. Use createPullRequest to open a PR that references this issue
 
+All commits are attributed to the signed-in user — never use your own identity (Ghost) as the commit author.
+
 Only use tools when the user explicitly asks you to make changes, fix something, or create a PR. For analysis and suggestions, just describe the changes in text.
 
-**For complex git operations** (cherry-pick, rebase, merge with conflicts, revert, bisect, squash, etc.), use the **sandbox tools** — startSandbox to clone the repo, then sandboxRun to execute git commands. NEVER say you can't do these operations.
+## Multi-file Commits (API-based)
+For changes spanning multiple files, you can also use:
+- **stageFile**: Stage a file with its full content (one call per file)
+- **commitChanges**: Commit all staged files to a branch at once
+- **createPullRequestFromBranch**: Open a PR from the committed branch
+
+**For complex git operations** (cherry-pick, rebase, bisect, etc.), use the **sandbox tools** — startSandbox to clone the repo, then sandboxRun to execute git commands. NEVER say you can't do these operations.
 
 ## General Tools
 You also have general GitHub tools (search repos, star, fork, list issues/PRs, navigate, comment, labels, assign, create branches, etc.). Use them when the user asks for things beyond this issue.
@@ -1771,6 +1935,9 @@ You also have general GitHub tools (search repos, star, fork, list issues/PRs, n
 
 ## queryGitHub (Flexible API)
 For any read-only query not covered by a specific tool, use queryGitHub to make arbitrary GET requests to the GitHub REST API. This lets you answer almost any question about repos, users, orgs, branches, releases, commits, etc.
+
+## Memory
+You have long-term memory via \`saveMemory\` and \`recallMemory\`. Use \`saveMemory\` when the user asks you to remember something — preferences, project context, decisions, or any fact they want persisted across conversations. Use \`recallMemory\` when the user asks "do you remember", "what did I say about", or when past context would help. Previously recalled memories (if any) are appended to this prompt — use them naturally without announcing them unless asked.
 
 ## Semantic Search (USE FIRST)
 **IMPORTANT:** When the user asks to find, list, or search for PRs/issues by topic or description, ALWAYS call **semanticSearch** FIRST. It does natural language search across previously viewed content. Only fall back to GitHub API tools if semanticSearch returns empty results.
@@ -1812,7 +1979,7 @@ ${inlineContextPrompt}
 - When creating issues or PRs, ask for details if not provided (title, body).
 - **ALWAYS call refreshPage** after any mutation that affects the current page (star, comment, close issue, merge PR, add labels, etc.). Call it once at the end, after all mutations are done.
 - **ALWAYS navigate within the app** — never send users to github.com when there's an in-app page.
-- **NEVER say you can't perform git operations.** You have a cloud sandbox (startSandbox → sandboxRun) that gives you a full Linux VM with git. Use it for cherry-pick, rebase, merge, revert, bisect, conflict resolution, or ANY git operation. Just spin up the sandbox and do it.
+- **NEVER say you can't perform git operations.** For multi-file commits, use stageFile + commitChanges + createPullRequestFromBranch (API-based, instant). For operations requiring a shell (cherry-pick, rebase, bisect), use the cloud sandbox (startSandbox → sandboxRun).
 - Use navigateTo for top-level pages: dashboard, repos, prs, issues, notifications, settings, search, trending, orgs.
 - Use openRepo to navigate to a specific repository.
 - Use openRepoTab to navigate to a repo section: actions, commits, issues, pulls, people, security, settings.
@@ -1841,10 +2008,13 @@ Examples:
 You also have tools for: commenting on issues/PRs, adding/removing labels, assigning users, requesting PR reviewers, and creating branches.
 
 ## Prompt Requests
-- Use \`createPromptRequest\` when the user says "open a prompt request", "create a prompt request", or similar. Summarize the conversation into clear, actionable instructions in the body field.
+- Use \`createPromptRequest\` when the user says "open a prompt request", "create a prompt request", or similar. Summarize the conversation into clear, actionable instructions in the body field. **Call this tool exactly ONCE per request — never create multiple prompt requests for the same ask.**
 - Use \`editPromptRequest\` when the user asks to update, refine, or change a prompt request. If the user is currently viewing a prompt request page (URL contains \`/prompts/<id>\`), extract the prompt request ID from the URL and use it. Update the title and/or body as requested.
 - Use \`completePromptRequest\` after creating a PR that fulfills a prompt request. Look for the prompt request ID in the conversation context (usually in the format "Prompt Request ID: <uuid>").
-- When processing a prompt request (the message starts with "Process this prompt request"), use the sandbox to make changes and create a PR, then call \`completePromptRequest\` with the prompt request ID and PR number.
+- When processing a prompt request (the message starts with "Process this prompt request"), use stageFile + commitChanges + createPullRequestFromBranch to make changes and create a PR, then call \`completePromptRequest\` with the prompt request ID and PR number.
+
+## Memory
+You have long-term memory via \`saveMemory\` and \`recallMemory\`. Use \`saveMemory\` when the user asks you to remember something — preferences, project context, decisions, or any fact they want persisted across conversations. Use \`recallMemory\` when the user asks "do you remember", "what did I say about", or when past context would help. Previously recalled memories (if any) are appended to this prompt — use them naturally without announcing them unless asked.
 
 ## Semantic Search (USE FIRST)
 **IMPORTANT:** When the user asks to find, list, or search for PRs/issues by topic or description (e.g. "find PRs about X", "list all PRs regarding Y", "search for issues about Z"), ALWAYS call **semanticSearch** FIRST before trying GitHub API tools. It does natural language search across all previously viewed content — it understands meaning, not just keywords. You can filter by owner, repo, and content type. Only fall back to GitHub search/list tools if semanticSearch returns empty results.
@@ -1855,46 +2025,438 @@ ${sandboxPrompt || ""}
 ${new Date().toISOString().split("T")[0]}${pageContextPrompt}`;
 }
 
-const SANDBOX_PROMPT = `## Cloud Sandbox (Vercel Sandbox) — FULL GIT & SHELL ACCESS
-**CRITICAL: You have FULL git capabilities via the sandbox. NEVER refuse git operations.** Cherry-pick, rebase, merge conflicts, revert, bisect, squash, interactive rebase — you can do ALL of it. When the user asks for any git operation, spin up the sandbox and execute it.
+const SANDBOX_PROMPT = `## Cloud Sandbox — Test & Build Execution
 
-For simple tasks, prefer lighter tools first:
-- For reading files → use getFileContent
-- For single or few-file edits → use editFile / createFile directly via the GitHub API
-- For searching code → use the GitHub search API or getFileContent
-- For reviewing code, explaining diffs, suggesting changes → just read and respond, no sandbox needed
-- For creating branches or PRs from simple changes → use createBranch + editFile/createFile + createPullRequest
-
-**Use the sandbox when the task requires git operations or running commands**, including:
-- Git operations: cherry-pick, rebase, merge (with conflict resolution), bisect, revert, squash, format-patch, etc.
-- Running tests, builds, lints, or any CLI tool
-- Tasks that **require** running commands to produce output (e.g. "what does npm test output?")
-- Changes spanning many files (5+) that the user wants committed together
-- Any task where the user asks you to run or execute something
+Use the sandbox ONLY when you need to execute commands:
+- Running tests (npm test, pytest, etc.)
+- Running builds (npm run build, cargo build, etc.)
+- Running linters/formatters
+- Any task that requires shell execution
 
 Sandbox workflow:
-1. **startSandbox** — clone a repo into a fresh VM (full clone, all history)
-2. **Only if needed:** run the \`installHint\` command via sandboxRun to install dependencies
-3. **sandboxRun** — run tests, builds, lints, git commands, or any shell command
-4. **sandboxReadFile / sandboxWriteFile** — read or edit files
-5. **sandboxCommitAndPush** — create a branch, commit, and push
-6. **sandboxCreatePR** — open a PR from the pushed branch
-7. **killSandbox** — shut down when done
+1. **startSandbox** — clone repo into a fresh VM
+2. **sandboxRun** — run commands (install deps, run tests, etc.)
+3. **sandboxReadFile / sandboxWriteFile** — read or edit files in the VM
+4. To commit changes made in sandbox: read modified files with **sandboxReadFile**, then use **stageFile** + **commitChanges** (API-based, no push needed)
+5. **killSandbox** — shut down when done
 
-For git operations with merge conflicts:
-1. Start sandbox and clone the repo
-2. Run the git command (cherry-pick, merge, rebase, etc.)
-3. If conflicts occur, use sandboxRun to see conflicting files (git status, git diff)
-4. Use sandboxReadFile to read the conflicted files
-5. Use sandboxWriteFile to write the resolved version
-6. Run \`git add <file>\` and \`git <command> --continue\` to finish
-7. Push and create a PR
+Do NOT use the sandbox for:
+- Reading or writing files (use GitHub API tools like getFileContent)
+- Creating commits or PRs (use stageFile + commitChanges + createPullRequestFromBranch)
+- Simple git operations like creating branches (use createBranch)
 
-IMPORTANT: Do NOT install dependencies if you're only doing git operations. Installing deps is slow and unnecessary for pure git work. Only install when you actually need to run tests, builds, or code that depends on node_modules.`;
+For multi-file code changes WITHOUT running commands, prefer the API-based tools:
+1. Read files with getFileContent
+2. Stage changes with stageFile (one call per file)
+3. Commit with commitChanges (creates branch + commit in one step)
+4. Open a PR with createPullRequestFromBranch
+
+IMPORTANT: Do NOT install dependencies if you're only doing git operations. Only install when you actually need to run tests, builds, or code that depends on node_modules.
+
+## Merge Conflict Resolution (API-based)
+For merge conflicts, use the API-based tools instead of the sandbox:
+1. Call **getMergeConflictInfo** to see file differences between both branches
+2. Analyze both versions and produce resolved content
+3. Call **commitMergeResolution** with the resolved files (creates a merge commit with two parents)
+4. Call **refreshPage** to update the UI
+
+For complex git operations that REQUIRE a shell (cherry-pick, rebase, bisect, etc.), use the sandbox — startSandbox → sandboxRun. Then read results with sandboxReadFile and commit via the API tools.`;
+
+const MERGE_CONFLICT_PROMPT = `
+
+## MERGE CONFLICT RESOLUTION
+
+You are resolving merge conflicts for this PR. Follow this exact process:
+
+### Step 1: Get conflict info
+- Call \`getMergeConflictInfo\` with the base branch ({baseBranch}) and head branch ({headBranch})
+- This returns each file's content from BOTH branches
+
+### Step 2: Resolve each file
+For each file that differs between branches:
+1. Compare the base version and head version
+2. Resolve intelligently:
+   - If changes are in DIFFERENT parts of the code (non-overlapping): keep BOTH changes
+   - If changes OVERLAP but are complementary (e.g., one adds an import, other adds a different import): merge both
+   - If changes are truly conflicting (modifying the same logic differently): prefer the HEAD (PR) version but incorporate any critical fixes from the base branch
+   - Preserve the code style, indentation, and formatting of the surrounding code
+3. Produce the final resolved content for each file
+
+### Step 3: Commit the resolution
+- Call \`commitMergeResolution\` with ALL resolved files at once
+- This creates a merge commit with two parents (head + base), properly resolving the conflict
+
+### Step 4: Report
+- Tell the user which files had conflicts and how each was resolved
+- Call \`refreshPage\` so the PR page updates
+
+### Critical rules:
+- NEVER skip a conflicting file — resolve ALL of them
+- If unsure about a conflict, lean toward keeping the PR's changes (HEAD) since the author intended those
+- If a conflict is in a generated file (lock files, compiled output), keep the HEAD version
+`;
+
+// ─── API-based Code Edit Tools ──────────────────────────────────────────────
+
+function getCodeEditTools(octokit: Octokit, commitAuthor?: CommitAuthor) {
+  const stagedFiles = new Map<string, { owner: string; repo: string; path: string; content: string }>();
+  const deletedFiles = new Map<string, { owner: string; repo: string; path: string }>();
+
+  return {
+    stageFile: tool({
+      description: "Stage a file for the next commit. Provide the full file content. Call this for each file you want to create or modify, then use commitChanges to commit them all at once.",
+      inputSchema: z.object({
+        owner: z.string().describe("Repository owner"),
+        repo: z.string().describe("Repository name"),
+        path: z.string().describe("File path relative to repo root"),
+        content: z.string().describe("Full file content"),
+      }),
+      execute: async ({ owner, repo, path, content }) => {
+        const key = `${owner}/${repo}:${path}`;
+        stagedFiles.set(key, { owner, repo, path, content });
+        deletedFiles.delete(key);
+        return { success: true, path, stagedCount: stagedFiles.size };
+      },
+    }),
+
+    stageFileForDeletion: tool({
+      description: "Stage a file for deletion in the next commit.",
+      inputSchema: z.object({
+        owner: z.string().describe("Repository owner"),
+        repo: z.string().describe("Repository name"),
+        path: z.string().describe("File path relative to repo root"),
+      }),
+      execute: async ({ owner, repo, path }) => {
+        const key = `${owner}/${repo}:${path}`;
+        deletedFiles.set(key, { owner, repo, path });
+        stagedFiles.delete(key);
+        return { success: true, path, deletedCount: deletedFiles.size };
+      },
+    }),
+
+    commitChanges: tool({
+      description: "Commit all staged files to a branch. Creates the branch if it doesn't exist. Use after staging files with stageFile.",
+      inputSchema: z.object({
+        owner: z.string().describe("Repository owner"),
+        repo: z.string().describe("Repository name"),
+        branch: z.string().describe("Branch name to commit to (created if it doesn't exist)"),
+        commitMessage: z.string().describe("Commit message describing the changes"),
+        baseBranch: z.string().optional().describe("Base branch to create from (defaults to repo default branch). Only used when creating a new branch."),
+      }),
+      execute: async ({ owner, repo, branch, commitMessage, baseBranch }) => {
+        // Filter staged/deleted files for this repo
+        const repoPrefix = `${owner}/${repo}:`;
+        const filesToCommit = Array.from(stagedFiles.entries())
+          .filter(([key]) => key.startsWith(repoPrefix))
+          .map(([, v]) => v);
+        const filesToDelete = Array.from(deletedFiles.entries())
+          .filter(([key]) => key.startsWith(repoPrefix))
+          .map(([, v]) => v);
+
+        if (filesToCommit.length === 0 && filesToDelete.length === 0) {
+          return { error: "No files staged for this repository. Use stageFile or stageFileForDeletion first." };
+        }
+
+        try {
+          // 1. Resolve base branch SHA
+          let baseSha: string;
+          try {
+            const { data: refData } = await octokit.git.getRef({
+              owner, repo,
+              ref: `heads/${branch}`,
+            });
+            // Branch already exists — commit on top of it
+            baseSha = refData.object.sha;
+          } catch {
+            // Branch doesn't exist — create from baseBranch or default branch
+            const base = baseBranch || (await octokit.repos.get({ owner, repo })).data.default_branch;
+            const { data: baseRef } = await octokit.git.getRef({
+              owner, repo,
+              ref: `heads/${base}`,
+            });
+            baseSha = baseRef.object.sha;
+          }
+
+          // 2. Get the base tree
+          const { data: baseCommit } = await octokit.git.getCommit({
+            owner, repo,
+            commit_sha: baseSha,
+          });
+          const baseTreeSha = baseCommit.tree.sha;
+
+          // 3. Create blobs for staged files in parallel
+          const treeEntries: { path: string; mode: "100644"; type: "blob"; sha: string | null }[] = [];
+
+          const blobPromises = filesToCommit.map(async ({ path, content }) => {
+            const { data: blob } = await octokit.git.createBlob({
+              owner, repo,
+              content: Buffer.from(content).toString("base64"),
+              encoding: "base64",
+            });
+            return { path, sha: blob.sha };
+          });
+
+          const blobs = await Promise.all(blobPromises);
+          for (const { path, sha } of blobs) {
+            treeEntries.push({ path, mode: "100644", type: "blob", sha });
+          }
+
+          // 4. Add deletions
+          for (const { path } of filesToDelete) {
+            treeEntries.push({ path, mode: "100644", type: "blob", sha: null });
+          }
+
+          // 5. Create tree → commit
+          const { data: newTree } = await octokit.git.createTree({
+            owner, repo,
+            base_tree: baseTreeSha,
+            tree: treeEntries as any,
+          });
+
+          const { data: newCommit } = await octokit.git.createCommit({
+            owner, repo,
+            message: commitMessage,
+            tree: newTree.sha,
+            parents: [baseSha],
+            author: commitAuthor
+              ? { ...commitAuthor, date: new Date().toISOString() }
+              : { name: "User", email: "user@users.noreply.github.com", date: new Date().toISOString() },
+          });
+
+          // 6. Create or update branch ref
+          try {
+            await octokit.git.createRef({
+              owner, repo,
+              ref: `refs/heads/${branch}`,
+              sha: newCommit.sha,
+            });
+          } catch {
+            // Branch already exists — update it
+            await octokit.git.updateRef({
+              owner, repo,
+              ref: `heads/${branch}`,
+              sha: newCommit.sha,
+            });
+          }
+
+          // 7. Clear staged files for this repo
+          for (const key of stagedFiles.keys()) {
+            if (key.startsWith(repoPrefix)) stagedFiles.delete(key);
+          }
+          for (const key of deletedFiles.keys()) {
+            if (key.startsWith(repoPrefix)) deletedFiles.delete(key);
+          }
+
+          return {
+            success: true,
+            branch,
+            commitMessage,
+            commitSha: newCommit.sha.slice(0, 7),
+            filesChanged: filesToCommit.length,
+            filesDeleted: filesToDelete.length,
+          };
+        } catch (e: any) {
+          return { error: e.message || "Failed to commit changes" };
+        }
+      },
+    }),
+
+    createPullRequestFromBranch: tool({
+      description: "Create a pull request from a branch. Use after committing changes with commitChanges.",
+      inputSchema: z.object({
+        owner: z.string().describe("Repository owner"),
+        repo: z.string().describe("Repository name"),
+        title: z.string().describe("PR title"),
+        body: z.string().describe("PR description body (markdown)"),
+        head: z.string().describe("Source branch name (the branch with your commits)"),
+        base: z.string().optional().describe("Target branch (defaults to repo default branch)"),
+      }),
+      execute: async ({ owner, repo, title, body, head, base }) => {
+        try {
+          const targetBase = base || (await octokit.repos.get({ owner, repo })).data.default_branch;
+          const { data } = await octokit.pulls.create({
+            owner, repo, title, body,
+            head,
+            base: targetBase,
+          });
+          return {
+            _clientAction: "openPullRequest" as const,
+            success: true,
+            number: data.number,
+            title: data.title,
+            html_url: toAppUrl(data.html_url),
+            owner,
+            repo,
+            pullNumber: data.number,
+          };
+        } catch (e: any) {
+          return { error: e.message || "Failed to create pull request" };
+        }
+      },
+    }),
+  };
+}
+
+// ─── Merge Conflict Tools ───────────────────────────────────────────────────
+
+function getMergeConflictTools(octokit: Octokit, commitAuthor?: CommitAuthor) {
+  return {
+    getMergeConflictInfo: tool({
+      description: "Get merge conflict details for a PR. Shows which files differ between the two branches and their content from both sides.",
+      inputSchema: z.object({
+        owner: z.string().describe("Repository owner"),
+        repo: z.string().describe("Repository name"),
+        baseBranch: z.string().describe("Target/base branch (e.g. 'main')"),
+        headBranch: z.string().describe("Source/head branch (e.g. 'feat/my-feature')"),
+      }),
+      execute: async ({ owner, repo, baseBranch, headBranch }) => {
+        try {
+          // 1. Compare branches to find differing files
+          const { data: comparison } = await octokit.repos.compareCommits({
+            owner, repo,
+            base: baseBranch,
+            head: headBranch,
+          } as any);
+
+          const files = (comparison as any).files || [];
+          if (files.length === 0) {
+            return { message: "No file differences found between branches." };
+          }
+
+          // 2. For modified files, read both versions
+          const conflictFiles = await Promise.all(
+            files.slice(0, 20).map(async (f: any) => {
+              const result: any = { path: f.filename, status: f.status };
+
+              // Read base version
+              try {
+                const { data: baseData } = await octokit.repos.getContent({
+                  owner, repo, path: f.filename, ref: baseBranch,
+                });
+                if (!Array.isArray(baseData) && baseData.type === "file") {
+                  result.baseContent = Buffer.from((baseData as any).content, "base64").toString("utf-8");
+                }
+              } catch {
+                result.baseContent = null; // File doesn't exist on base
+              }
+
+              // Read head version
+              try {
+                const { data: headData } = await octokit.repos.getContent({
+                  owner, repo, path: f.filename, ref: headBranch,
+                });
+                if (!Array.isArray(headData) && headData.type === "file") {
+                  result.headContent = Buffer.from((headData as any).content, "base64").toString("utf-8");
+                }
+              } catch {
+                result.headContent = null; // File doesn't exist on head
+              }
+
+              return result;
+            })
+          );
+
+          return {
+            baseBranch,
+            headBranch,
+            totalFiles: files.length,
+            files: conflictFiles,
+          };
+        } catch (e: any) {
+          return { error: e.message || "Failed to get merge conflict info" };
+        }
+      },
+    }),
+
+    commitMergeResolution: tool({
+      description: "Create a merge commit to resolve conflicts. Takes resolved file contents and creates a merge commit with two parents (head and base).",
+      inputSchema: z.object({
+        owner: z.string().describe("Repository owner"),
+        repo: z.string().describe("Repository name"),
+        headBranch: z.string().describe("Source/head branch to update"),
+        baseBranch: z.string().describe("Target/base branch to merge in"),
+        resolvedFiles: z.array(z.object({
+          path: z.string().describe("File path relative to repo root"),
+          content: z.string().describe("Resolved file content"),
+        })).describe("Array of resolved files with their content"),
+        commitMessage: z.string().optional().describe("Merge commit message"),
+      }),
+      execute: async ({ owner, repo, headBranch, baseBranch, resolvedFiles, commitMessage }) => {
+        try {
+          // 1. Get HEAD SHAs of both branches
+          const [headRef, baseRef] = await Promise.all([
+            octokit.git.getRef({ owner, repo, ref: `heads/${headBranch}` }),
+            octokit.git.getRef({ owner, repo, ref: `heads/${baseBranch}` }),
+          ]);
+          const headSha = headRef.data.object.sha;
+          const baseSha = baseRef.data.object.sha;
+
+          // 2. Get head commit's tree as base
+          const { data: headCommit } = await octokit.git.getCommit({
+            owner, repo, commit_sha: headSha,
+          });
+
+          // 3. Create blobs for resolved files
+          const treeEntries = await Promise.all(
+            resolvedFiles.map(async (file) => {
+              const { data: blob } = await octokit.git.createBlob({
+                owner, repo,
+                content: Buffer.from(file.content).toString("base64"),
+                encoding: "base64",
+              });
+              return {
+                path: file.path,
+                mode: "100644" as const,
+                type: "blob" as const,
+                sha: blob.sha,
+              };
+            })
+          );
+
+          // 4. Create new tree based on head's tree
+          const { data: newTree } = await octokit.git.createTree({
+            owner, repo,
+            base_tree: headCommit.tree.sha,
+            tree: treeEntries,
+          });
+
+          // 5. Create merge commit with TWO PARENTS: [headSha, baseSha]
+          const message = commitMessage || `Merge branch '${baseBranch}' into ${headBranch}`;
+          const { data: mergeCommit } = await octokit.git.createCommit({
+            owner, repo,
+            message,
+            tree: newTree.sha,
+            parents: [headSha, baseSha],
+            author: commitAuthor
+              ? { ...commitAuthor, date: new Date().toISOString() }
+              : { name: "User", email: "user@users.noreply.github.com", date: new Date().toISOString() },
+          });
+
+          // 6. Update head branch ref to point to merge commit
+          await octokit.git.updateRef({
+            owner, repo,
+            ref: `heads/${headBranch}`,
+            sha: mergeCommit.sha,
+          });
+
+          return {
+            _clientAction: "refreshPage" as const,
+            success: true,
+            mergeCommitSha: mergeCommit.sha.slice(0, 7),
+            resolvedFileCount: resolvedFiles.length,
+            message,
+          };
+        } catch (e: any) {
+          return { error: e.message || "Failed to create merge commit" };
+        }
+      },
+    }),
+  };
+}
 
 // ─── Sandbox Tools ──────────────────────────────────────────────────────────
 
-function getSandboxTools(octokit: Octokit, githubToken: string) {
+function getSandboxTools(octokit: Octokit, githubToken: string, commitAuthor?: CommitAuthor) {
   let sandbox: Sandbox | null = null;
   let repoPath: string | null = null;
   let repoOwner: string | null = null;
@@ -1905,13 +2467,13 @@ function getSandboxTools(octokit: Octokit, githubToken: string) {
   async function runShell(
     sbx: Sandbox,
     command: string,
-    opts?: { cwd?: string }
+    opts?: { cwd?: string; timeout?: number }
   ) {
     const result = await sbx.runCommand({
       cmd: "bash",
       args: ["-c", command],
       cwd: opts?.cwd,
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(opts?.timeout ?? 120_000),
     });
     return {
       exitCode: result.exitCode,
@@ -1924,16 +2486,20 @@ function getSandboxTools(octokit: Octokit, githubToken: string) {
     startSandbox: tool({
       description: `Start a cloud sandbox VM and clone a GitHub repo into it. Returns quickly with project info (package manager, scripts, file listing). Does NOT install dependencies — use sandboxRun for that after this returns.
 
-Use this when you need to:
-- Run tests or builds to verify changes
-- Make complex multi-file changes
-- Run linters, formatters, or other CLI tools on the codebase
+Use this ONLY when you need to execute commands:
+- Running tests (npm test, pytest, etc.)
+- Running builds (npm run build, cargo build, etc.)
+- Running linters/formatters
+- Any task that requires shell execution
+
+Do NOT use this for file reads/writes or commits — use the GitHub API tools (stageFile + commitChanges) instead.
 
 The sandbox has git, node, npm, python, and common dev tools.
 
 **After this returns**, follow these steps:
 1. If the project uses pnpm/yarn/bun: run \`sandboxRun\` with the installHint command
-2. Then run whatever commands you need (tests, builds, etc.)`,
+2. Then run whatever commands you need (tests, builds, etc.)
+3. To commit changes made in the sandbox: read modified files with sandboxReadFile, then use stageFile + commitChanges`,
       inputSchema: z.object({
         owner: z.string().describe("Repository owner"),
         repo: z.string().describe("Repository name"),
@@ -1949,18 +2515,21 @@ The sandbox has git, node, npm, python, and common dev tools.
           return { error: `Invalid owner/repo: "${owner}/${repo}". Provide valid GitHub owner and repository names.` };
         }
 
+        // Make idempotent — kill existing sandbox if any
         if (sandbox) {
-          return {
-            error:
-              "A sandbox is already running. Use the existing sandbox or ask the user to start a new conversation.",
-          };
+          await sandbox.stop().catch(() => {});
+          sandbox = null;
+          repoPath = null;
+          repoOwner = null;
+          repoName = null;
+          defaultBranch = null;
         }
 
         // ── Phase 1: Create sandbox ──
         console.log("[Sandbox] Creating sandbox...");
         try {
           sandbox = await Sandbox.create({
-            timeout: 5 * 60 * 1000,
+            timeout: 10 * 60 * 1000,
             runtime: "node24",
           });
           console.log("[Sandbox] Created:", sandbox.sandboxId);
@@ -1973,17 +2542,17 @@ The sandbox has git, node, npm, python, and common dev tools.
         // ── Phase 2: Clone repo ──
         console.log("[Sandbox] Cloning", `${owner}/${repo}...`);
         try {
-          // Configure git and set up credential helper so all subsequent
-          // git operations (fetch, push, cherry-pick, rebase) have auth
+          // Read-only git config — no credential helper for push
           await runShell(
             sandbox,
-            `git config --global user.name "Ghost" && git config --global user.email "ghost@better-github.app" && git config --global credential.helper store && echo "https://x-access-token:${githubToken}@github.com" > $HOME/.git-credentials`
+            `git config --global user.name "${commitAuthor?.name ?? "Ghost"}" && git config --global user.email "${commitAuthor?.email ?? "ghost@better-github.app"}"`
           );
 
           repoPath = `/vercel/sandbox/${repo}`;
           repoOwner = owner;
           repoName = repo;
 
+          // Full clone (no shallow) — use token in URL for private repo access
           const cloneUrl = `https://x-access-token:${githubToken}@github.com/${owner}/${repo}.git`;
           const cloneCmd = branch
             ? `git clone --branch ${branch} ${cloneUrl} ${repoPath}`
@@ -2109,30 +2678,35 @@ The sandbox has git, node, npm, python, and common dev tools.
 
     sandboxRun: tool({
       description:
-        "Run a shell command in the sandbox. The working directory defaults to the cloned repo root. Use for: installing deps (npm install), running tests (npm test), building (npm run build), linting, formatting, or any CLI tool.",
+        "Run a shell command in the sandbox. The working directory defaults to the cloned repo root. Use for: installing deps (npm install), running tests (npm test), building (npm run build), linting, formatting, or any CLI tool. Use a longer timeout for install/build commands.",
       inputSchema: z.object({
         command: z.string().describe("Shell command to run"),
         cwd: z
           .string()
           .optional()
           .describe("Working directory (defaults to repo root)"),
+        timeout: z
+          .number()
+          .optional()
+          .describe("Timeout in ms (default 120000, use 300000 for installs/builds)"),
       }),
-      execute: async ({ command, cwd }) => {
+      execute: async ({ command, cwd, timeout }) => {
         if (!sandbox)
           return { error: "No sandbox running. Use startSandbox first." };
         try {
           const result = await runShell(sandbox, command, {
             cwd: cwd || repoPath || undefined,
+            timeout: timeout ?? 120_000,
           });
-          // Truncate large output
+          // Truncate large output — keep the tail where errors usually appear
           const maxLen = 8000;
           const stdout =
             result.stdout.length > maxLen
-              ? result.stdout.slice(0, maxLen) + "\n...(truncated)"
+              ? `...(truncated ${result.stdout.length - maxLen} chars)...\n` + result.stdout.slice(-maxLen)
               : result.stdout;
           const stderr =
             result.stderr.length > maxLen
-              ? result.stderr.slice(0, maxLen) + "\n...(truncated)"
+              ? `...(truncated)...\n` + result.stderr.slice(-maxLen)
               : result.stderr;
 
           if (result.exitCode !== 0) {
@@ -2210,134 +2784,6 @@ The sandbox has git, node, npm, python, and common dev tools.
       },
     }),
 
-    sandboxCommitAndPush: tool({
-      description:
-        "Create a new branch (if needed), stage all changes, commit, and push to the remote. Use this after making file changes in the sandbox.",
-      inputSchema: z.object({
-        branch: z
-          .string()
-          .describe(
-            "Branch name to push to (will be created if it doesn't exist)"
-          ),
-        commitMessage: z
-          .string()
-          .describe("Commit message describing the changes"),
-        files: z
-          .array(z.string())
-          .optional()
-          .describe(
-            "Specific files to stage (defaults to all changes if omitted)"
-          ),
-      }),
-      execute: async ({ branch, commitMessage, files }) => {
-        if (!sandbox || !repoPath)
-          return { error: "No sandbox running. Use startSandbox first." };
-        try {
-          const run = (cmd: string) =>
-            runShell(sandbox!, cmd, { cwd: repoPath! });
-
-          // Create and checkout branch if different from current
-          const currentBranch = (
-            await run("git rev-parse --abbrev-ref HEAD")
-          ).stdout.trim();
-          if (branch !== currentBranch) {
-            const checkout = await run(
-              `git checkout -b ${branch} 2>/dev/null || git checkout ${branch}`
-            );
-            if (checkout.exitCode !== 0) {
-              return { error: `Branch checkout failed: ${checkout.stderr}` };
-            }
-          }
-
-          // Stage files
-          if (files && files.length > 0) {
-            const addResult = await run(`git add ${files.join(" ")}`);
-            if (addResult.exitCode !== 0) {
-              return { error: `git add failed: ${addResult.stderr}` };
-            }
-          } else {
-            const addResult = await run("git add -A");
-            if (addResult.exitCode !== 0) {
-              return { error: `git add failed: ${addResult.stderr}` };
-            }
-          }
-
-          // Check if there's anything to commit
-          const statusResult = await run("git diff --cached --stat");
-          if (!statusResult.stdout.trim()) {
-            return { error: "No staged changes to commit." };
-          }
-
-          // Commit
-          const commitResult = await run(
-            `git commit -m "${commitMessage.replace(/"/g, '\\"')}"`
-          );
-          if (commitResult.exitCode !== 0) {
-            return { error: `Commit failed: ${commitResult.stderr}` };
-          }
-
-          // Push
-          const pushResult = await run(`git push -u origin ${branch}`);
-          if (pushResult.exitCode !== 0) {
-            return { error: `Push failed: ${pushResult.stderr}` };
-          }
-
-          return {
-            success: true,
-            branch,
-            commitMessage,
-            diffStat: statusResult.stdout.trim(),
-          };
-        } catch (e: any) {
-          return { error: e.message || "Failed to commit and push" };
-        }
-      },
-    }),
-
-    sandboxCreatePR: tool({
-      description:
-        "Create a pull request from a sandbox branch. Use after sandboxCommitAndPush. This uses the GitHub API (not the sandbox) to create the PR.",
-      inputSchema: z.object({
-        title: z.string().describe("PR title"),
-        body: z.string().describe("PR description body (markdown)"),
-        head: z
-          .string()
-          .describe("Source branch name (the branch you pushed)"),
-        base: z
-          .string()
-          .optional()
-          .describe(
-            "Target branch (defaults to the repo's default branch)"
-          ),
-      }),
-      execute: async ({ title, body, head, base }) => {
-        if (!repoOwner || !repoName)
-          return { error: "No repo context. Use startSandbox first." };
-        try {
-          const { data } = await octokit.pulls.create({
-            owner: repoOwner,
-            repo: repoName,
-            title,
-            body,
-            head,
-            base: base || defaultBranch || "main",
-          });
-          return {
-            _clientAction: "openPullRequest" as const,
-            success: true,
-            number: data.number,
-            title: data.title,
-            html_url: toAppUrl(data.html_url),
-            owner: repoOwner,
-            repo: repoName,
-            pullNumber: data.number,
-          };
-        } catch (e: any) {
-          return { error: e.message || "Failed to create PR" };
-        }
-      },
-    }),
-
     killSandbox: tool({
       description: "Shut down the running sandbox VM to free resources.",
       inputSchema: z.object({}),
@@ -2387,18 +2833,29 @@ export async function POST(req: Request) {
 
   const githubToken = await getGitHubToken();
 
-  // Extract userId for semantic search
+  // Extract userId and commit author info
   const session = await auth.api.getSession({ headers: await headers() });
   const userId = session?.user?.id;
+  let commitAuthor: CommitAuthor | undefined;
+  if (session?.user) {
+    const u = session.user as any;
+    const name = u.name || u.login || u.username || "User";
+    const login = u.login || u.username || "user";
+    const email = u.email || `${login}@users.noreply.github.com`;
+    commitAuthor = { name, email };
+  }
 
   // Determine mode and build tools + system prompt
   let systemPrompt: string;
   let tools: Record<string, any>;
 
   const generalTools = getGeneralTools(octokit, pageContext, userId ?? undefined);
-  const sandboxTools = githubToken ? getSandboxTools(octokit, githubToken) : {};
+  const codeEditTools = getCodeEditTools(octokit, commitAuthor);
+  const sandboxTools = githubToken ? getSandboxTools(octokit, githubToken, commitAuthor) : {};
   const sandboxPrompt = githubToken ? SANDBOX_PROMPT : undefined;
   const searchTools = userId ? getSemanticSearchTool(userId) : {};
+  const memoryTools = userId ? getMemoryTools(userId) : {};
+  const recalledMemories = userId ? await recallMemoriesForContext(userId, messages) : "";
 
   // Auto-detect PR/issue context from pathname when not explicitly provided
   let resolvedPrContext = prContext;
@@ -2478,9 +2935,19 @@ export async function POST(req: Request) {
 
   if (resolvedPrContext) {
     // PR mode
-    const prTools = getPrTools(octokit, resolvedPrContext);
-    systemPrompt = buildPrSystemPrompt(resolvedPrContext, inlineContexts, activeFile, sandboxPrompt);
-    tools = withSafeTools({ ...prTools, ...generalTools, ...sandboxTools, ...searchTools });
+    const prTools = getPrTools(octokit, resolvedPrContext, commitAuthor);
+    const mergeConflictTools = getMergeConflictTools(octokit, commitAuthor);
+    // For merge conflicts, skip file diffs — Ghost uses getMergeConflictInfo tool instead
+    if ((resolvedPrContext as any).mergeConflict) {
+      const liteContext = { ...resolvedPrContext, files: [] };
+      systemPrompt = buildPrSystemPrompt(liteContext, inlineContexts, activeFile, sandboxPrompt) + recalledMemories;
+      systemPrompt += MERGE_CONFLICT_PROMPT
+        .replace(/{headBranch}/g, resolvedPrContext.headBranch)
+        .replace(/{baseBranch}/g, resolvedPrContext.baseBranch);
+    } else {
+      systemPrompt = buildPrSystemPrompt(resolvedPrContext, inlineContexts, activeFile, sandboxPrompt) + recalledMemories;
+    }
+    tools = withSafeTools({ ...prTools, ...codeEditTools, ...mergeConflictTools, ...generalTools, ...sandboxTools, ...searchTools, ...memoryTools });
   } else if (resolvedIssueContext) {
     // Issue mode
     let defaultBranch = "main";
@@ -2494,9 +2961,9 @@ export async function POST(req: Request) {
       // fallback to main
     }
 
-    const issueTools = getIssueTools(octokit, resolvedIssueContext, defaultBranch);
-    systemPrompt = buildIssueSystemPrompt(resolvedIssueContext, defaultBranch, inlineContexts, sandboxPrompt);
-    tools = withSafeTools({ ...issueTools, ...generalTools, ...sandboxTools, ...searchTools });
+    const issueTools = getIssueTools(octokit, resolvedIssueContext, defaultBranch, commitAuthor);
+    systemPrompt = buildIssueSystemPrompt(resolvedIssueContext, defaultBranch, inlineContexts, sandboxPrompt) + recalledMemories;
+    tools = withSafeTools({ ...issueTools, ...codeEditTools, ...generalTools, ...sandboxTools, ...searchTools, ...memoryTools });
   } else {
     // General mode
     let currentUser: { login: string } | null = null;
@@ -2507,7 +2974,7 @@ export async function POST(req: Request) {
       // continue without user context
     }
 
-    systemPrompt = buildGeneralSystemPrompt(currentUser, pageContext, inlineContexts, sandboxPrompt);
+    systemPrompt = buildGeneralSystemPrompt(currentUser, pageContext, inlineContexts, sandboxPrompt) + recalledMemories;
 
     // Add getFileContent tool when we can infer a repo from the current page
     const repoMatch = pageContext?.pathname?.match(/^\/repos\/([^/]+)\/([^/]+)/);
@@ -2515,8 +2982,10 @@ export async function POST(req: Request) {
       const [, owner, repo] = repoMatch;
       tools = withSafeTools({
         ...generalTools,
+        ...codeEditTools,
         ...sandboxTools,
         ...searchTools,
+        ...memoryTools,
         getFileContent: tool({
           description:
             "Read the full contents of a file from the repository. Use this to get more context about code the user is asking about.",
@@ -2543,17 +3012,62 @@ export async function POST(req: Request) {
         }),
       });
     } else {
-      tools = withSafeTools({ ...generalTools, ...sandboxTools, ...searchTools });
+      tools = withSafeTools({ ...generalTools, ...codeEditTools, ...sandboxTools, ...searchTools, ...memoryTools });
     }
   }
 
-  let modelId = process.env.GHOST_MODEL || "moonshotai/kimi-k2.5";
-  let apiKey = process.env.OPEN_ROUTER_API_KEY!;
+  // Determine task type for model selection
+  const taskType: GhostTaskType = (resolvedPrContext as any)?.mergeConflict ? "mergeConflict" : "default";
+
+  let userModelChoice = "auto";
+  const serverApiKey = process.env.OPEN_ROUTER_API_KEY ?? "";
+  let apiKey = serverApiKey;
+  let usingOwnKey = false;
 
   if (userId) {
-    const settings = getUserSettings(userId);
-    if (settings.ghostModel && settings.ghostModel !== "openrouter/auto") modelId = settings.ghostModel;
-    if (settings.useOwnApiKey && settings.openrouterApiKey) apiKey = settings.openrouterApiKey;
+    const settings = await getUserSettings(userId);
+    if (settings.ghostModel) userModelChoice = settings.ghostModel;
+    if (settings.useOwnApiKey && settings.openrouterApiKey) {
+      apiKey = settings.openrouterApiKey;
+      usingOwnKey = true;
+    }
+  }
+
+  const modelId = resolveModel(userModelChoice, taskType);
+
+  if (!apiKey) {
+    console.error("[Ghost] No OpenRouter API key configured");
+    return new Response(
+      JSON.stringify({ error: "No OpenRouter API key configured." }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  console.log(`[Ghost] Using ${usingOwnKey ? "user" : "server"} API key: ${apiKey.slice(0, 12)}...${apiKey.slice(-4)}`);
+
+  // Pre-validate the API key to avoid mid-stream 401 errors
+  try {
+    const checkRes = await fetch("https://openrouter.ai/api/v1/auth/key", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!checkRes.ok) {
+      // If user's own key is invalid, fall back to the server key
+      if (usingOwnKey && serverApiKey) {
+        console.warn("[Ghost] User API key invalid, falling back to server key");
+        apiKey = serverApiKey;
+        usingOwnKey = false;
+      } else {
+        const body = await checkRes.text().catch(() => "");
+        console.error("[Ghost] OpenRouter API key invalid:", checkRes.status, body);
+        return new Response(
+          JSON.stringify({ error: "OpenRouter API key is invalid or expired. Please update your API key in settings." }),
+          { status: 401, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    }
+  } catch (e) {
+    // If the validation check itself fails (network error), proceed anyway
+    console.warn("[Ghost] Could not validate API key, proceeding:", e);
   }
 
   try {

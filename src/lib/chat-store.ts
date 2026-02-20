@@ -1,71 +1,4 @@
-import Database from "better-sqlite3";
-
-const DB_PATH = process.env.GITHUB_SYNC_DB_PATH ?? "./better-github.db";
-
-const globalForChatDb = globalThis as typeof globalThis & {
-  __chatDb?: Database.Database;
-  __chatSchemaReady?: boolean;
-};
-
-function getDb(): Database.Database {
-  if (!globalForChatDb.__chatDb) {
-    const db = new Database(DB_PATH);
-    db.pragma("journal_mode = WAL");
-    db.pragma("busy_timeout = 5000");
-    globalForChatDb.__chatDb = db;
-  }
-  ensureSchema(globalForChatDb.__chatDb);
-  return globalForChatDb.__chatDb;
-}
-
-function ensureSchema(db: Database.Database) {
-  if (globalForChatDb.__chatSchemaReady) return;
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS chat_conversations (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      chat_type TEXT NOT NULL,
-      context_key TEXT NOT NULL,
-      title TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_conversations_user_context
-      ON chat_conversations (user_id, context_key);
-
-    CREATE INDEX IF NOT EXISTS idx_chat_conversations_user_type
-      ON chat_conversations (user_id, chat_type);
-
-    CREATE TABLE IF NOT EXISTS chat_messages (
-      id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation
-      ON chat_messages (conversation_id, created_at);
-
-    CREATE TABLE IF NOT EXISTS ghost_tabs (
-      user_id TEXT NOT NULL,
-      tab_id TEXT NOT NULL,
-      label TEXT NOT NULL,
-      position INTEGER NOT NULL,
-      PRIMARY KEY (user_id, tab_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS ghost_tab_state (
-      user_id TEXT PRIMARY KEY,
-      active_tab_id TEXT NOT NULL,
-      counter INTEGER NOT NULL DEFAULT 1
-    );
-  `);
-
-  globalForChatDb.__chatSchemaReady = true;
-}
+import { prisma } from "./db";
 
 export interface ChatConversation {
   id: string;
@@ -85,169 +18,149 @@ export interface ChatMessage {
   createdAt: string;
 }
 
-interface ConversationRow {
+function toConversation(row: {
   id: string;
-  user_id: string;
-  chat_type: string;
-  context_key: string;
+  userId: string;
+  chatType: string;
+  contextKey: string;
   title: string | null;
-  created_at: string;
-  updated_at: string;
+  createdAt: string;
+  updatedAt: string;
+}): ChatConversation {
+  return {
+    id: row.id,
+    userId: row.userId,
+    chatType: row.chatType,
+    contextKey: row.contextKey,
+    title: row.title,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
 }
 
-interface MessageRow {
+function toMessage(row: {
   id: string;
-  conversation_id: string;
+  conversationId: string;
   role: string;
   content: string;
-  created_at: string;
-}
-
-function rowToConversation(row: ConversationRow): ChatConversation {
+  createdAt: string;
+}): ChatMessage {
   return {
     id: row.id,
-    userId: row.user_id,
-    chatType: row.chat_type,
-    contextKey: row.context_key,
-    title: row.title,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
-}
-
-function rowToMessage(row: MessageRow): ChatMessage {
-  return {
-    id: row.id,
-    conversationId: row.conversation_id,
+    conversationId: row.conversationId,
     role: row.role,
     content: row.content,
-    createdAt: row.created_at,
+    createdAt: row.createdAt,
   };
 }
 
-export function getOrCreateConversation(
+export async function getOrCreateConversation(
   userId: string,
   chatType: string,
   contextKey: string
-): ChatConversation {
-  const db = getDb();
+): Promise<ChatConversation> {
   const now = new Date().toISOString();
 
-  const existing = db
-    .prepare(
-      `SELECT * FROM chat_conversations WHERE user_id = ? AND context_key = ?`
-    )
-    .get(userId, contextKey) as ConversationRow | undefined;
+  const existing = await prisma.chatConversation.findUnique({
+    where: { userId_contextKey: { userId, contextKey } },
+  });
 
-  if (existing) return rowToConversation(existing);
+  if (existing) return toConversation(existing);
 
   const id = crypto.randomUUID();
-  db.prepare(
-    `INSERT INTO chat_conversations (id, user_id, chat_type, context_key, title, created_at, updated_at)
-     VALUES (?, ?, ?, ?, NULL, ?, ?)`
-  ).run(id, userId, chatType, contextKey, now, now);
+  const created = await prisma.chatConversation.create({
+    data: { id, userId, chatType, contextKey, title: null, createdAt: now, updatedAt: now },
+  });
 
-  return {
-    id,
-    userId,
-    chatType,
-    contextKey,
-    title: null,
-    createdAt: now,
-    updatedAt: now,
-  };
+  return toConversation(created);
 }
 
-export function saveMessage(
+export async function saveMessage(
   conversationId: string,
   message: { id: string; role: string; content: string }
-): ChatMessage {
-  const db = getDb();
+): Promise<ChatMessage> {
   const now = new Date().toISOString();
 
-  // Upsert message (in case of re-saves during streaming)
-  db.prepare(
-    `INSERT INTO chat_messages (id, conversation_id, role, content, created_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET content = excluded.content`
-  ).run(message.id, conversationId, message.role, message.content, now);
+  const saved = await prisma.chatMessage.upsert({
+    where: { id: message.id },
+    create: {
+      id: message.id,
+      conversationId,
+      role: message.role,
+      content: message.content,
+      createdAt: now,
+    },
+    update: { content: message.content },
+  });
 
-  // Update conversation timestamp and title
-  db.prepare(
-    `UPDATE chat_conversations SET updated_at = ? WHERE id = ?`
-  ).run(now, conversationId);
+  await prisma.chatConversation.update({
+    where: { id: conversationId },
+    data: { updatedAt: now },
+  });
 
-  // Auto-generate title from first user message if not set
   if (message.role === "user") {
-    db.prepare(
-      `UPDATE chat_conversations SET title = ? WHERE id = ? AND title IS NULL`
-    ).run(message.content.slice(0, 100), conversationId);
+    await prisma.chatConversation.updateMany({
+      where: { id: conversationId, title: null },
+      data: { title: message.content.slice(0, 100) },
+    });
   }
 
-  return {
-    id: message.id,
-    conversationId,
-    role: message.role,
-    content: message.content,
-    createdAt: now,
-  };
+  return toMessage(saved);
 }
 
-export function getConversation(
+export async function getConversation(
   userId: string,
   contextKey: string
-): { conversation: ChatConversation; messages: ChatMessage[] } | null {
-  const db = getDb();
-
-  const row = db
-    .prepare(
-      `SELECT * FROM chat_conversations WHERE user_id = ? AND context_key = ?`
-    )
-    .get(userId, contextKey) as ConversationRow | undefined;
+): Promise<{ conversation: ChatConversation; messages: ChatMessage[] } | null> {
+  const row = await prisma.chatConversation.findUnique({
+    where: { userId_contextKey: { userId, contextKey } },
+  });
 
   if (!row) return null;
 
-  const messages = db
-    .prepare(
-      `SELECT * FROM chat_messages WHERE conversation_id = ? ORDER BY created_at ASC`
-    )
-    .all(row.id) as MessageRow[];
+  const messages = await prisma.chatMessage.findMany({
+    where: { conversationId: row.id },
+    orderBy: { createdAt: "asc" },
+  });
 
   return {
-    conversation: rowToConversation(row),
-    messages: messages.map(rowToMessage),
+    conversation: toConversation(row),
+    messages: messages.map(toMessage),
   };
 }
 
-export function deleteConversation(conversationId: string): void {
-  const db = getDb();
-  db.prepare(`DELETE FROM chat_messages WHERE conversation_id = ?`).run(
-    conversationId
-  );
-  db.prepare(`DELETE FROM chat_conversations WHERE id = ?`).run(
-    conversationId
-  );
+export async function deleteConversation(conversationId: string): Promise<void> {
+  await prisma.chatMessage.deleteMany({ where: { conversationId } });
+  await prisma.chatConversation.delete({ where: { id: conversationId } });
 }
 
-export function listConversations(
+export async function listConversations(
   userId: string,
   chatType?: string
-): ChatConversation[] {
-  const db = getDb();
+): Promise<ChatConversation[]> {
+  const rows = await prisma.chatConversation.findMany({
+    where: { userId, ...(chatType ? { chatType } : {}) },
+    orderBy: { updatedAt: "desc" },
+    take: 50,
+  });
 
-  const rows = chatType
-    ? (db
-        .prepare(
-          `SELECT * FROM chat_conversations WHERE user_id = ? AND chat_type = ? ORDER BY updated_at DESC LIMIT 50`
-        )
-        .all(userId, chatType) as ConversationRow[])
-    : (db
-        .prepare(
-          `SELECT * FROM chat_conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 50`
-        )
-        .all(userId) as ConversationRow[]);
+  return rows.map(toConversation);
+}
 
-  return rows.map(rowToConversation);
+export async function listGhostConversations(
+  userId: string,
+  limit = 10
+): Promise<ChatConversation[]> {
+  const rows = await prisma.chatConversation.findMany({
+    where: {
+      userId,
+      contextKey: { startsWith: "ghost::" },
+      title: { not: null },
+    },
+    orderBy: { updatedAt: "desc" },
+    take: limit,
+  });
+  return rows.map(toConversation);
 }
 
 // ─── Ghost Tabs ────────────────────────────────────────────────────────────
@@ -263,144 +176,159 @@ export interface GhostTabState {
   counter: number;
 }
 
-interface GhostTabRow {
-  user_id: string;
-  tab_id: string;
-  label: string;
-  position: number;
-}
-
-interface GhostTabStateRow {
-  user_id: string;
-  active_tab_id: string;
-  counter: number;
-}
-
 function generateTabId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function createDefaultGhostTabState(): { tabs: GhostTab[]; activeTabId: string; counter: number } {
+function createDefaultGhostTabState(): {
+  tabs: GhostTab[];
+  activeTabId: string;
+  counter: number;
+} {
   const id = generateTabId();
   return { tabs: [{ id, label: "Thread 1" }], activeTabId: id, counter: 1 };
 }
 
-export function getGhostTabState(userId: string): GhostTabState {
-  const db = getDb();
+export async function getGhostTabState(
+  userId: string
+): Promise<GhostTabState> {
+  const tabs = await prisma.ghostTab.findMany({
+    where: { userId },
+    orderBy: { position: "asc" },
+  });
 
-  const tabs = db
-    .prepare(`SELECT * FROM ghost_tabs WHERE user_id = ? ORDER BY position ASC`)
-    .all(userId) as GhostTabRow[];
-
-  const stateRow = db
-    .prepare(`SELECT * FROM ghost_tab_state WHERE user_id = ?`)
-    .get(userId) as GhostTabStateRow | undefined;
+  const stateRow = await prisma.ghostTabState.findUnique({
+    where: { userId },
+  });
 
   if (tabs.length === 0 || !stateRow) {
-    // Initialize default state for new users
     const defaults = createDefaultGhostTabState();
-    const insertTab = db.prepare(
-      `INSERT OR REPLACE INTO ghost_tabs (user_id, tab_id, label, position) VALUES (?, ?, ?, ?)`
-    );
-    const insertState = db.prepare(
-      `INSERT OR REPLACE INTO ghost_tab_state (user_id, active_tab_id, counter) VALUES (?, ?, ?)`
-    );
-    db.transaction(() => {
-      insertTab.run(userId, defaults.tabs[0].id, defaults.tabs[0].label, 0);
-      insertState.run(userId, defaults.activeTabId, defaults.counter);
-    })();
+    await prisma.$transaction([
+      prisma.ghostTab.deleteMany({ where: { userId } }),
+      prisma.ghostTab.create({
+        data: {
+          userId,
+          tabId: defaults.tabs[0].id,
+          label: defaults.tabs[0].label,
+          position: 0,
+        },
+      }),
+      prisma.ghostTabState.upsert({
+        where: { userId },
+        create: {
+          userId,
+          activeTabId: defaults.activeTabId,
+          counter: defaults.counter,
+        },
+        update: {
+          activeTabId: defaults.activeTabId,
+          counter: defaults.counter,
+        },
+      }),
+    ]);
     return defaults;
   }
 
   return {
-    tabs: tabs.map((t) => ({ id: t.tab_id, label: t.label })),
-    activeTabId: stateRow.active_tab_id,
+    tabs: tabs.map((t: { tabId: string; label: string }) => ({ id: t.tabId, label: t.label })),
+    activeTabId: stateRow.activeTabId,
     counter: stateRow.counter,
   };
 }
 
-export function addGhostTab(
+export async function addGhostTab(
   userId: string,
   tabId: string,
   label: string,
   counter: number
-): void {
-  const db = getDb();
+): Promise<void> {
+  const maxPos = await prisma.ghostTab.aggregate({
+    where: { userId },
+    _max: { position: true },
+  });
+  const position = (maxPos._max.position ?? -1) + 1;
 
-  // Get max position
-  const maxPos = db
-    .prepare(`SELECT MAX(position) as mp FROM ghost_tabs WHERE user_id = ?`)
-    .get(userId) as { mp: number | null };
-  const position = (maxPos?.mp ?? -1) + 1;
-
-  db.transaction(() => {
-    db.prepare(
-      `INSERT INTO ghost_tabs (user_id, tab_id, label, position) VALUES (?, ?, ?, ?)`
-    ).run(userId, tabId, label, position);
-    db.prepare(
-      `INSERT OR REPLACE INTO ghost_tab_state (user_id, active_tab_id, counter) VALUES (?, ?, ?)`
-    ).run(userId, tabId, counter);
-  })();
+  await prisma.$transaction([
+    prisma.ghostTab.create({ data: { userId, tabId, label, position } }),
+    prisma.ghostTabState.upsert({
+      where: { userId },
+      create: { userId, activeTabId: tabId, counter },
+      update: { activeTabId: tabId, counter },
+    }),
+  ]);
 }
 
-export function closeGhostTab(
+export async function closeGhostTab(
   userId: string,
   tabId: string,
   newDefault?: { id: string; label: string; counter: number }
-): void {
-  const db = getDb();
+): Promise<void> {
+  const tabs = await prisma.ghostTab.findMany({
+    where: { userId },
+    orderBy: { position: "asc" },
+  });
 
-  const tabs = db
-    .prepare(`SELECT * FROM ghost_tabs WHERE user_id = ? ORDER BY position ASC`)
-    .all(userId) as GhostTabRow[];
+  const stateRow = await prisma.ghostTabState.findUnique({
+    where: { userId },
+  });
 
-  const stateRow = db
-    .prepare(`SELECT * FROM ghost_tab_state WHERE user_id = ?`)
-    .get(userId) as GhostTabStateRow | undefined;
-
-  const remaining = tabs.filter((t) => t.tab_id !== tabId);
+  const remaining = tabs.filter((t: { tabId: string }) => t.tabId !== tabId);
 
   if (remaining.length === 0) {
-    // Reset to default using client-provided details (or generate fallback)
-    const def = newDefault ?? { id: generateTabId(), label: "Thread 1", counter: 1 };
-    db.transaction(() => {
-      db.prepare(`DELETE FROM ghost_tabs WHERE user_id = ?`).run(userId);
-      db.prepare(
-        `INSERT INTO ghost_tabs (user_id, tab_id, label, position) VALUES (?, ?, ?, ?)`
-      ).run(userId, def.id, def.label, 0);
-      db.prepare(
-        `INSERT OR REPLACE INTO ghost_tab_state (user_id, active_tab_id, counter) VALUES (?, ?, ?)`
-      ).run(userId, def.id, def.counter);
-    })();
+    const def = newDefault ?? {
+      id: generateTabId(),
+      label: "Thread 1",
+      counter: 1,
+    };
+    await prisma.$transaction([
+      prisma.ghostTab.deleteMany({ where: { userId } }),
+      prisma.ghostTab.create({
+        data: { userId, tabId: def.id, label: def.label, position: 0 },
+      }),
+      prisma.ghostTabState.upsert({
+        where: { userId },
+        create: { userId, activeTabId: def.id, counter: def.counter },
+        update: { activeTabId: def.id, counter: def.counter },
+      }),
+    ]);
     return;
   }
 
-  // Determine new active tab if the closed one was active
-  let newActiveId = stateRow?.active_tab_id ?? remaining[0].tab_id;
+  let newActiveId = stateRow?.activeTabId ?? remaining[0].tabId;
   if (newActiveId === tabId) {
-    const closedIdx = tabs.findIndex((t) => t.tab_id === tabId);
+    const closedIdx = tabs.findIndex((t: { tabId: string }) => t.tabId === tabId);
     const newIdx = Math.min(closedIdx, remaining.length - 1);
-    newActiveId = remaining[newIdx].tab_id;
+    newActiveId = remaining[newIdx].tabId;
   }
 
-  db.transaction(() => {
-    db.prepare(`DELETE FROM ghost_tabs WHERE user_id = ? AND tab_id = ?`).run(userId, tabId);
-    db.prepare(
-      `UPDATE ghost_tab_state SET active_tab_id = ? WHERE user_id = ?`
-    ).run(newActiveId, userId);
-  })();
+  await prisma.$transaction([
+    prisma.ghostTab.delete({
+      where: { userId_tabId: { userId, tabId } },
+    }),
+    prisma.ghostTabState.update({
+      where: { userId },
+      data: { activeTabId: newActiveId },
+    }),
+  ]);
 }
 
-export function renameGhostTab(userId: string, tabId: string, label: string): void {
-  const db = getDb();
-  db.prepare(
-    `UPDATE ghost_tabs SET label = ? WHERE user_id = ? AND tab_id = ?`
-  ).run(label, userId, tabId);
+export async function renameGhostTab(
+  userId: string,
+  tabId: string,
+  label: string
+): Promise<void> {
+  await prisma.ghostTab.update({
+    where: { userId_tabId: { userId, tabId } },
+    data: { label },
+  });
 }
 
-export function setActiveGhostTab(userId: string, tabId: string): void {
-  const db = getDb();
-  db.prepare(
-    `UPDATE ghost_tab_state SET active_tab_id = ? WHERE user_id = ?`
-  ).run(tabId, userId);
+export async function setActiveGhostTab(
+  userId: string,
+  tabId: string
+): Promise<void> {
+  await prisma.ghostTabState.update({
+    where: { userId },
+    data: { activeTabId: tabId },
+  });
 }

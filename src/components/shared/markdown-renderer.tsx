@@ -146,6 +146,33 @@ function addHeadingAnchors(html: string): string {
   );
 }
 
+/** Convert #123 issue/PR references (outside of code/links) to issue links */
+function linkifyIssueReferences(html: string, owner: string, repo: string): string {
+  const parts = html.split(/(<[^>]+>)/);
+  let inCode = 0;
+  let inLink = 0;
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (part.startsWith("<")) {
+      const lower = part.toLowerCase();
+      if (lower.startsWith("<code") || lower.startsWith("<pre")) inCode++;
+      else if (lower.startsWith("</code") || lower.startsWith("</pre")) inCode--;
+      else if (lower.startsWith("<a ") || lower.startsWith("<a>")) inLink++;
+      else if (lower.startsWith("</a")) inLink--;
+      continue;
+    }
+    if (inCode > 0 || inLink > 0) continue;
+    // Match #123 not preceded by & (HTML entities) or word chars
+    parts[i] = part.replace(
+      /(^|[^&\w])#(\d+)\b/g,
+      (_m, prefix, num) =>
+        `${prefix}<a href="/${owner}/${repo}/issues/${num}" class="ghmd-issue-ref">#${num}</a>`
+    );
+  }
+  return parts.join("");
+}
+
 /** Convert @username mentions (outside of code/links) to profile links */
 function linkifyMentions(html: string): string {
   // Split on tags to avoid replacing inside <a>, <code>, <pre> content
@@ -174,9 +201,19 @@ function linkifyMentions(html: string): string {
   return parts.join("");
 }
 
+/** Mark <p> tags that contain only images/badge links as .ghmd-badges so they render inline */
+function markBadgeParagraphs(html: string): string {
+  // Match <p> tags whose content is only <a><img></a> and/or <img> elements (with optional whitespace)
+  return html.replace(
+    /<p>((?:\s*(?:<a\s[^>]*>\s*<img\s[^>]*\/?>\s*<\/a>|<img\s[^>]*\/?>)\s*)+)<\/p>/gi,
+    '<p class="ghmd-badges">$1</p>'
+  );
+}
+
 export async function renderMarkdownToHtml(
   content: string,
-  repoContext?: RepoContext
+  repoContext?: RepoContext,
+  issueRefContext?: { owner: string; repo: string }
 ): Promise<string> {
   const codeBlocks: { code: string; lang: string; id: number }[] = [];
   let blockId = 0;
@@ -216,6 +253,7 @@ export async function renderMarkdownToHtml(
 
   html = processAlerts(html);
   html = addHeadingAnchors(html);
+  html = markBadgeParagraphs(html);
 
   if (repoContext) {
     html = resolveUrls(html, repoContext);
@@ -239,6 +277,12 @@ export async function renderMarkdownToHtml(
 
   html = linkifyMentions(html);
 
+  // Linkify #123 references when repo context is available
+  const refCtx = issueRefContext || (repoContext ? { owner: repoContext.owner, repo: repoContext.repo } : undefined);
+  if (refCtx) {
+    html = linkifyIssueReferences(html, refCtx.owner, refCtx.repo);
+  }
+
   return html;
 }
 
@@ -246,12 +290,14 @@ export async function MarkdownRenderer({
   content,
   className,
   repoContext,
+  issueRefContext,
 }: {
   content: string;
   className?: string;
   repoContext?: RepoContext;
+  issueRefContext?: { owner: string; repo: string };
 }) {
-  const html = await renderMarkdownToHtml(content, repoContext);
+  const html = await renderMarkdownToHtml(content, repoContext, issueRefContext);
 
   return (
     <div

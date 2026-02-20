@@ -1,7 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
 import {
-  Star,
   GitFork,
   Eye,
   Lock,
@@ -10,7 +9,6 @@ import {
   GitBranch,
   GitCommit,
   Scale,
-  CircleDot,
   Archive,
   Users,
   Link as LinkIcon,
@@ -112,7 +110,7 @@ export function RepoSidebar({
             alt=""
             width={160}
             height={160}
-            className="w-32 aspect-square rounded-sm border border-border"
+            className="w-32 aspect-square rounded-sm"
           />
           {description && (
             <p className="text-xs text-muted-foreground/80 leading-relaxed">
@@ -123,7 +121,7 @@ export function RepoSidebar({
             {badges.map((b) => (
               <span
                 key={b.label}
-                className="flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 border border-border text-muted-foreground"
+                className="flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 border border-dashed border-border rounded-full text-muted-foreground"
               >
                 <b.icon className="w-2.5 h-2.5" />
                 {b.label}
@@ -151,7 +149,7 @@ export function RepoSidebar({
               Latest commit
             </span>
             <Link
-              href={`/${owner}/${repoName}/commits`}
+              href={`/${owner}/${repoName}/commits/${latestCommit.sha.slice(0, 7)}`}
               className="group flex items-start gap-2 p-2 -mx-2 rounded-md hover:bg-muted/50 transition-colors"
             >
               {latestCommit.author?.avatarUrl ? (
@@ -198,42 +196,6 @@ export function RepoSidebar({
             <div className="absolute right-0 top-0 bottom-0 w-8 pointer-events-none bg-gradient-to-l from-background to-transparent" />
           </div>
         )}
-
-        {/* Stats */}
-        <div className="flex flex-col gap-2">
-          <span className="text-[9px] font-mono uppercase tracking-wider text-muted-foreground/70">
-            Stats
-          </span>
-          <div className="flex flex-col gap-1.5">
-            {[
-              { icon: Star, label: "Stars", value: formatNumber(stars) },
-              { icon: GitFork, label: "Forks", value: formatNumber(forks) },
-              {
-                icon: Eye,
-                label: "Watchers",
-                value: formatNumber(watchers),
-              },
-              {
-                icon: CircleDot,
-                label: "Issues",
-                value: formatNumber(openIssuesCount),
-              },
-            ].map((stat) => (
-              <div
-                key={stat.label}
-                className="flex items-center justify-between text-xs"
-              >
-                <span className="flex items-center gap-1.5 text-muted-foreground/70">
-                  <stat.icon className="w-3 h-3" />
-                  {stat.label}
-                </span>
-                <span className="font-mono text-muted-foreground">
-                  {stat.value}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
 
         {/* Actions */}
         <div className="flex flex-col gap-2">
@@ -384,7 +346,7 @@ export function RepoSidebar({
             {badges.map((b) => (
               <span
                 key={b.label}
-                className="flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 border border-border text-muted-foreground"
+                className="flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 border border-dashed border-border rounded-full text-muted-foreground"
               >
                 <b.icon className="w-2.5 h-2.5" />
                 {b.label}

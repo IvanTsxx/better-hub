@@ -21,7 +21,7 @@ export async function GET() {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const state = getGhostTabState(userId);
+  const state = await getGhostTabState(userId);
   return Response.json(state);
 }
 
@@ -38,28 +38,28 @@ export async function POST(req: Request) {
       if (!tabId || !label || counter == null) {
         return Response.json({ error: "tabId, label, counter required" }, { status: 400 });
       }
-      addGhostTab(userId, tabId, label, counter);
+      await addGhostTab(userId, tabId, label, counter);
       return Response.json({ ok: true });
     }
     case "close": {
       if (!tabId) {
         return Response.json({ error: "tabId required" }, { status: 400 });
       }
-      closeGhostTab(userId, tabId, newDefault);
+      await closeGhostTab(userId, tabId, newDefault);
       return Response.json({ ok: true });
     }
     case "rename": {
       if (!tabId || !label) {
         return Response.json({ error: "tabId, label required" }, { status: 400 });
       }
-      renameGhostTab(userId, tabId, label);
+      await renameGhostTab(userId, tabId, label);
       return Response.json({ ok: true });
     }
     case "switch": {
       if (!tabId) {
         return Response.json({ error: "tabId required" }, { status: 400 });
       }
-      setActiveGhostTab(userId, tabId);
+      await setActiveGhostTab(userId, tabId);
       return Response.json({ ok: true });
     }
     default:

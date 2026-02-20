@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { LogOut, Trash2, Github, Loader2 } from "lucide-react";
+import { LogOut, Trash2, Github, Loader2, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { signOut, authClient } from "@/lib/auth-client";
+import type { UserSettings } from "@/lib/user-settings-store";
 
 interface AccountTabProps {
   user: {
@@ -12,9 +13,11 @@ interface AccountTabProps {
     image: string | null;
   };
   connectedAccounts: { providerId: string }[];
+  settings: UserSettings;
+  onUpdate: (updates: Partial<UserSettings>) => Promise<void>;
 }
 
-export function AccountTab({ user, connectedAccounts }: AccountTabProps) {
+export function AccountTab({ user, connectedAccounts, settings, onUpdate }: AccountTabProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [connectingSlack, setConnectingSlack] = useState(false);
 
@@ -116,6 +119,22 @@ export function AccountTab({ user, connectedAccounts }: AccountTabProps) {
               </button>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* GitHub Accounts */}
+      <div className="px-4 py-4">
+        <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+          GitHub Accounts
+        </label>
+        <p className="mt-1 text-[10px] text-muted-foreground/50 font-mono">
+          Add extra GitHub accounts via PAT and switch between them.
+        </p>
+        <div className="mt-2 flex items-center gap-2">
+          <Users className="w-3.5 h-3.5 text-muted-foreground" />
+          <span className="text-[10px] font-mono text-muted-foreground/50">
+            Use the command menu (<kbd className="border border-border/60 px-1 py-0.5 rounded-sm text-[9px] font-mono">&#x2318;K</kbd> &rarr; Switch Account) to manage accounts.
+          </span>
         </div>
       </div>
 

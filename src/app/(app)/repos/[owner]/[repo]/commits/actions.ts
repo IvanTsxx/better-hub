@@ -6,12 +6,13 @@ export async function fetchCommitsByDate(
   owner: string,
   repo: string,
   since?: string,
-  until?: string
+  until?: string,
+  branch?: string
 ) {
   return getRepoCommits(
     owner,
     repo,
-    undefined,
+    branch || undefined,
     1,
     30,
     since || undefined,

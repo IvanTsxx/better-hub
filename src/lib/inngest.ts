@@ -60,7 +60,7 @@ export const embedContent = inngest.createFunction(
       const text = `${title}\n\n${body}`;
       const hash = hashContent(text);
 
-      const existingHash = getExistingContentHash(
+      const existingHash = await getExistingContentHash(
         userId,
         contentType,
         contentKey
@@ -68,7 +68,7 @@ export const embedContent = inngest.createFunction(
       if (existingHash === hash) return { skipped: true };
 
       const embedding = await embedText(text);
-      upsertEmbedding({
+      await upsertEmbedding({
         userId,
         contentType,
         contentKey,
@@ -141,7 +141,7 @@ export const embedContent = inngest.createFunction(
         const toEmbed: typeof batch = [];
         for (const item of batch) {
           const hash = hashContent(item.text);
-          const existingHash = getExistingContentHash(
+          const existingHash = await getExistingContentHash(
             userId,
             item.type,
             item.key
@@ -157,7 +157,7 @@ export const embedContent = inngest.createFunction(
 
         for (let j = 0; j < toEmbed.length; j++) {
           const item = toEmbed[j];
-          upsertEmbedding({
+          await upsertEmbedding({
             userId,
             contentType: item.type,
             contentKey: item.key,

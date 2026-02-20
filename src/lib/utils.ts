@@ -50,3 +50,28 @@ export function formatDuration(
   if (minutes > 0) return `${minutes}m ${seconds}s`;
   return `${seconds}s`;
 }
+
+export function calculateDuration(
+  startedAt: string | null | undefined,
+  completedAt: string | null | undefined
+): number {
+  if (!startedAt || !completedAt) return 0;
+  return Math.max(0, Math.floor((new Date(completedAt).getTime() - new Date(startedAt).getTime()) / 1000));
+}
+
+export function formatDurationDelta(deltaSeconds: number): { text: string; className: string } {
+  if (deltaSeconds === 0) return { text: "", className: "" };
+  const abs = Math.abs(deltaSeconds);
+  const hours = Math.floor(abs / 3600);
+  const minutes = Math.floor((abs % 3600) / 60);
+  const seconds = abs % 60;
+  let formatted: string;
+  if (hours > 0) formatted = `${hours}h ${minutes}m`;
+  else if (minutes > 0) formatted = `${minutes}m ${seconds}s`;
+  else formatted = `${seconds}s`;
+
+  if (deltaSeconds < 0) {
+    return { text: `(-${formatted})`, className: "text-success" };
+  }
+  return { text: `(+${formatted})`, className: "text-destructive" };
+}

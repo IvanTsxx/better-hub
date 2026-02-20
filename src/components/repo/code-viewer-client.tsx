@@ -1,10 +1,14 @@
 "use client";
 
-import { useRef, useState, useCallback, useEffect } from "react";
-import { Ghost, Search, ChevronUp, ChevronDown, X } from "lucide-react";
+import { useRef, useState, useCallback, useEffect, Fragment } from "react";
+import { useRouter } from "next/navigation";
+import { Ghost, Search, ChevronUp, ChevronDown, X, Pencil, Copy, Check, WrapText } from "lucide-react";
 import { formatBytes } from "@/lib/github-utils";
 import { cn } from "@/lib/utils";
+import type { SyntaxToken } from "@/lib/shiki";
 import { useGlobalChat, type InlineContext } from "@/components/shared/global-chat-provider";
+import { CommitDialog } from "@/components/shared/commit-dialog";
+import { commitFileEdit } from "@/app/(app)/repos/[owner]/[repo]/blob/blob-actions";
 
 interface CodeViewerClientProps {
   html: string;
@@ -17,6 +21,11 @@ interface CodeViewerClientProps {
   gutterW: number;
   className?: string;
   hideHeader?: boolean;
+  canEdit?: boolean;
+  sha?: string;
+  owner?: string;
+  repo?: string;
+  branch?: string;
 }
 
 interface SearchMatch {
@@ -82,6 +91,11 @@ export function CodeViewerClient({
   gutterW,
   className,
   hideHeader,
+  canEdit,
+  sha: initialSha,
+  owner,
+  repo,
+  branch,
 }: CodeViewerClientProps) {
   const { addCodeContext } = useGlobalChat();
   const codeRef = useRef<HTMLDivElement>(null);
@@ -98,12 +112,29 @@ export function CodeViewerClient({
   const [currentMatchIdx, setCurrentMatchIdx] = useState(-1);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const isHoveringRef = useRef(false);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const toolbarAdjustedRef = useRef(false);
+  const selectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const codeRouter = useRouter();
+
+  const [wordWrap, setWordWrap] = useState(false);
+
+  // Edit mode state
+  const [isEditing, setIsEditing] = useState(false);
+  const [editContent, setEditContent] = useState(content);
+  const [commitDialogOpen, setCommitDialogOpen] = useState(false);
+  const [currentSha, setCurrentSha] = useState(initialSha);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editPreRef = useRef<HTMLPreElement>(null);
+  const [editTokens, setEditTokens] = useState<SyntaxToken[][] | null>(null);
 
   const displayName = filePath || filename;
 
   const clearToolbar = useCallback(() => {
-    setToolbarPos(null);
     setSelectedRange(null);
+    setCopied(false);
   }, []);
 
   // Assign IDs to each .line element on mount
@@ -196,56 +227,71 @@ export function CodeViewerClient({
 
   // Detect text selection on mouseup inside the code block
   const handleMouseUp = useCallback((e: React.MouseEvent) => {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || !sel.toString().trim()) {
-      clearToolbar();
-      return;
-    }
+    // Ignore if mouseup is on the toolbar itself
+    if (toolbarRef.current?.contains(e.target as Node)) return;
 
-    if (!codeRef.current?.contains(sel.anchorNode) || !codeRef.current?.contains(sel.focusNode)) {
-      clearToolbar();
-      return;
-    }
+    const mouseX = e.clientX;
+    const mouseY = e.clientY;
 
-    const selectedText = sel.toString();
-    const allLines = Array.from(codeRef.current.querySelectorAll(".line"));
-
-    const anchorLine = sel.anchorNode ? (sel.anchorNode.nodeType === Node.ELEMENT_NODE ? sel.anchorNode as Element : sel.anchorNode.parentElement)?.closest(".line") : null;
-    const focusLine = sel.focusNode ? (sel.focusNode.nodeType === Node.ELEMENT_NODE ? sel.focusNode as Element : sel.focusNode.parentElement)?.closest(".line") : null;
-
-    if (!anchorLine || !focusLine) {
-      clearToolbar();
-      return;
-    }
-
-    const anchorIdx = allLines.indexOf(anchorLine);
-    const focusIdx = allLines.indexOf(focusLine);
-    if (anchorIdx === -1 || focusIdx === -1) {
-      clearToolbar();
-      return;
-    }
-
-    const startLine = Math.min(anchorIdx, focusIdx) + 1;
-    const endLine = Math.max(anchorIdx, focusIdx) + 1;
-
-    const containerRect = codeRef.current.getBoundingClientRect();
-    setToolbarPos({
-      x: e.clientX - containerRect.left,
-      y: e.clientY - containerRect.top + 20,
-    });
-    setSelectedRange({ start: startLine, end: endLine, text: selectedText });
-  }, [clearToolbar]);
-
-  // Clear toolbar when selection is lost
-  useEffect(() => {
-    const handleSelectionChange = () => {
+    // Use rAF so the browser has committed the selection before we read it
+    requestAnimationFrame(() => {
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || !sel.toString().trim()) {
         clearToolbar();
+        return;
       }
+
+      if (!codeRef.current?.contains(sel.anchorNode) || !codeRef.current?.contains(sel.focusNode)) {
+        clearToolbar();
+        return;
+      }
+
+      const selectedText = sel.toString();
+      const allLines = Array.from(codeRef.current.querySelectorAll(".line"));
+
+      const anchorLine = sel.anchorNode ? (sel.anchorNode.nodeType === Node.ELEMENT_NODE ? sel.anchorNode as Element : sel.anchorNode.parentElement)?.closest(".line") : null;
+      const focusLine = sel.focusNode ? (sel.focusNode.nodeType === Node.ELEMENT_NODE ? sel.focusNode as Element : sel.focusNode.parentElement)?.closest(".line") : null;
+
+      if (!anchorLine || !focusLine) {
+        clearToolbar();
+        return;
+      }
+
+      const anchorIdx = allLines.indexOf(anchorLine);
+      const focusIdx = allLines.indexOf(focusLine);
+      if (anchorIdx === -1 || focusIdx === -1) {
+        clearToolbar();
+        return;
+      }
+
+      const startLine = Math.min(anchorIdx, focusIdx) + 1;
+      const endLine = Math.max(anchorIdx, focusIdx) + 1;
+
+      // Store viewport coordinates directly (toolbar uses position:fixed)
+      toolbarAdjustedRef.current = false;
+      setToolbarPos({ x: mouseX, y: mouseY + 12 });
+      setSelectedRange({ start: startLine, end: endLine, text: selectedText });
+    });
+  }, [clearToolbar]);
+
+  // Clear toolbar when selection is lost (but not when interacting with toolbar)
+  useEffect(() => {
+    const handleSelectionChange = () => {
+      if (selectionTimerRef.current) clearTimeout(selectionTimerRef.current);
+      selectionTimerRef.current = setTimeout(() => {
+        // Don't clear while hovering toolbar
+        if (toolbarRef.current?.matches(":hover")) return;
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+          clearToolbar();
+        }
+      }, 50);
     };
     document.addEventListener("selectionchange", handleSelectionChange);
-    return () => document.removeEventListener("selectionchange", handleSelectionChange);
+    return () => {
+      document.removeEventListener("selectionchange", handleSelectionChange);
+      if (selectionTimerRef.current) clearTimeout(selectionTimerRef.current);
+    };
   }, [clearToolbar]);
 
   // --- Search: find matches when query changes ---
@@ -362,6 +408,7 @@ export function CodeViewerClient({
           closeSearch();
         } else {
           clearToolbar();
+          setCopied(false);
           setHighlightedLines(null);
           if (window.location.hash.startsWith("#L")) {
             window.history.replaceState(null, "", window.location.pathname + window.location.search);
@@ -372,6 +419,12 @@ export function CodeViewerClient({
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
   }, [clearToolbar, closeSearch, searchOpen]);
+
+  const handleCopySelection = useCallback((text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  }, []);
 
   const handleAddToGhost = useCallback(
     (startLine: number, endLine: number, selectedText: string) => {
@@ -384,21 +437,163 @@ export function CodeViewerClient({
       };
       addCodeContext(ctx);
       clearToolbar();
+      setCopied(false);
       window.getSelection()?.removeAllRanges();
     },
     [displayName, addCodeContext, clearToolbar]
   );
 
-  const handleAddFileToGhost = useCallback(() => {
-    const ctx: InlineContext = {
-      filename: displayName,
-      startLine: 1,
-      endLine: lineCount,
-      selectedCode: content,
-      side: "RIGHT",
+  // After toolbar renders, measure and clamp to viewport edges
+  useEffect(() => {
+    if (!selectedRange || !toolbarPos || !toolbarRef.current) {
+      toolbarAdjustedRef.current = false;
+      return;
+    }
+    if (toolbarAdjustedRef.current) return;
+    toolbarAdjustedRef.current = true;
+
+    const rect = toolbarRef.current.getBoundingClientRect();
+    let { x, y } = toolbarPos;
+    let adjusted = false;
+
+    if (rect.right > window.innerWidth - 8) {
+      x = window.innerWidth - rect.width - 8;
+      adjusted = true;
+    }
+    if (x < 8) {
+      x = 8;
+      adjusted = true;
+    }
+    if (rect.bottom > window.innerHeight - 8) {
+      y = toolbarPos.y - rect.height - 24;
+      adjusted = true;
+    }
+
+    if (adjusted) setToolbarPos({ x, y });
+  }, [selectedRange, toolbarPos]);
+
+  // Cmd+S while editing opens the commit dialog
+  useEffect(() => {
+    if (!isEditing) return;
+    const handleSaveShortcut = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+        e.preventDefault();
+        if (editContent !== content) {
+          setCommitDialogOpen(true);
+        }
+      }
     };
-    addCodeContext(ctx);
-  }, [displayName, lineCount, content, addCodeContext]);
+    document.addEventListener("keydown", handleSaveShortcut);
+    return () => document.removeEventListener("keydown", handleSaveShortcut);
+  }, [isEditing, editContent, content]);
+
+  // Fetch initial tokens when entering edit mode
+  const prevEditContentRef = useRef<string>("");
+  useEffect(() => {
+    if (!isEditing) {
+      setEditTokens(null);
+      prevEditContentRef.current = "";
+      return;
+    }
+    // Fetch tokens for initial content
+    const fetchTokens = async () => {
+      try {
+        const res = await fetch("/api/highlight-code", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: editContent, filename }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setEditTokens(data.tokens);
+          prevEditContentRef.current = editContent;
+        }
+      } catch {
+        // keep null tokens
+      }
+    };
+    if (!editTokens) fetchTokens();
+  }, [isEditing]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Debounced re-tokenization on edit
+  useEffect(() => {
+    if (!isEditing || !editContent) return;
+    if (editContent === prevEditContentRef.current) return;
+    prevEditContentRef.current = editContent;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/highlight-code", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: editContent, filename }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setEditTokens(data.tokens);
+        }
+      } catch {
+        // keep stale tokens
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [isEditing, editContent, filename]);
+
+  // Sync scroll between textarea and pre overlay
+  const handleEditScroll = useCallback(() => {
+    if (textareaRef.current && editPreRef.current) {
+      editPreRef.current.scrollTop = textareaRef.current.scrollTop;
+      editPreRef.current.scrollLeft = textareaRef.current.scrollLeft;
+    }
+  }, []);
+
+  // Tab key inserts spaces in edit mode
+  const handleEditKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const ta = e.currentTarget;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      const val = ta.value;
+      if (e.shiftKey) {
+        const lineStart = val.lastIndexOf("\n", start - 1) + 1;
+        const selectedText = val.slice(lineStart, end);
+        const dedented = selectedText.replace(/^  /gm, "");
+        const diff = selectedText.length - dedented.length;
+        const newVal = val.slice(0, lineStart) + dedented + val.slice(end);
+        setEditContent(newVal);
+        requestAnimationFrame(() => {
+          ta.selectionStart = Math.max(lineStart, start - Math.min(2, diff));
+          ta.selectionEnd = end - diff;
+        });
+      } else if (start !== end) {
+        const lineStart = val.lastIndexOf("\n", start - 1) + 1;
+        const selectedText = val.slice(lineStart, end);
+        const indented = selectedText.replace(/^/gm, "  ");
+        const lineCount = selectedText.split("\n").length;
+        const newVal = val.slice(0, lineStart) + indented + val.slice(end);
+        setEditContent(newVal);
+        requestAnimationFrame(() => {
+          ta.selectionStart = start + 2;
+          ta.selectionEnd = end + lineCount * 2;
+        });
+      } else {
+        const newVal = val.slice(0, start) + "  " + val.slice(end);
+        setEditContent(newVal);
+        requestAnimationFrame(() => {
+          ta.selectionStart = ta.selectionEnd = start + 2;
+        });
+      }
+    }
+  }, []);
+
+  const handleCommit = useCallback(async (message: string) => {
+    if (!owner || !repo || !branch || !currentSha || !filePath) return;
+    const result = await commitFileEdit(owner, repo, filePath, branch, editContent, currentSha, message);
+    if (result.error) throw new Error(result.error);
+    if (result.newSha) setCurrentSha(result.newSha);
+    setIsEditing(false);
+    codeRouter.refresh();
+  }, [owner, repo, branch, currentSha, filePath, editContent, codeRouter]);
 
   return (
     <div>
@@ -425,12 +620,43 @@ export function CodeViewerClient({
               </span>
               <div className="flex-1" />
               <button
-                onClick={handleAddFileToGhost}
-                className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-mono text-muted-foreground/50 hover:text-foreground transition-colors cursor-pointer rounded-md hover:bg-muted/60"
-                title="Add entire file to Ghost"
+                onClick={() => setWordWrap((w) => !w)}
+                className={cn(
+                  "flex items-center gap-1.5 px-2 py-1 text-[11px] font-mono transition-colors cursor-pointer rounded-md",
+                  wordWrap
+                    ? "text-foreground bg-muted/80"
+                    : "text-muted-foreground/50 hover:text-foreground hover:bg-muted/60"
+                )}
+                title="Toggle word wrap"
               >
-                <Ghost className="w-3.5 h-3.5" />
+                <WrapText className="w-3.5 h-3.5" />
               </button>
+              {canEdit && !isEditing && (
+                <button
+                  onClick={() => { setEditContent(content); setIsEditing(true); }}
+                  className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-mono text-muted-foreground/50 hover:text-foreground transition-colors cursor-pointer rounded-md hover:bg-muted/60"
+                  title="Edit file"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+              )}
+              {isEditing && (
+                <>
+                  <button
+                    onClick={() => { setIsEditing(false); setEditContent(content); }}
+                    className="px-2 py-1 text-[11px] font-mono text-muted-foreground hover:text-foreground transition-colors cursor-pointer rounded-md hover:bg-muted/60"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => setCommitDialogOpen(true)}
+                    disabled={editContent === content}
+                    className="px-2 py-1 text-[11px] font-mono bg-foreground text-background rounded-md hover:bg-foreground/90 transition-colors disabled:opacity-40 cursor-pointer"
+                  >
+                    Save
+                  </button>
+                </>
+              )}
             </div>
           )}
 
@@ -495,39 +721,142 @@ export function CodeViewerClient({
           )}
         </div>
 
-        <div
-          ref={codeRef}
-          className={cn(
-            "code-viewer overflow-x-auto border border-border relative",
-            searchOpen ? "rounded-b-md" : "rounded-md",
-            className
-          )}
-          style={{ "--cv-gutter-w": `${gutterW + 1}ch` } as React.CSSProperties}
-          onClick={handleClick}
-          onMouseUp={handleMouseUp}
-        >
+        {isEditing ? (
+          <div className={cn("border border-border overflow-auto", searchOpen ? "rounded-b-md" : "rounded-md", className)}>
+            <div className="flex min-h-[400px]">
+              {/* Line numbers gutter */}
+              <div className="shrink-0 select-none text-right border-r border-border/50 py-3 sticky left-0 bg-code-bg z-[1]">
+                {editContent.split("\n").map((_, i) => (
+                  <div
+                    key={i}
+                    className="text-[13px] leading-relaxed font-mono text-muted-foreground/40 px-3"
+                    style={{ height: "1lh" }}
+                  >
+                    {i + 1}
+                  </div>
+                ))}
+              </div>
+              {/* Code area: pre overlay + transparent textarea */}
+              <div className="flex-1 relative">
+                <pre
+                  ref={editPreRef}
+                  className="pointer-events-none font-mono text-[13px] leading-relaxed px-4 py-3 overflow-hidden m-0 diff-syntax whitespace-pre-wrap break-words"
+                  aria-hidden="true"
+                  style={{ tabSize: 2 }}
+                >
+                  {editTokens
+                    ? editContent.split("\n").map((lineText, lineIdx) => {
+                        const tokens = editTokens[lineIdx];
+                        return (
+                          <Fragment key={lineIdx}>
+                            {tokens
+                              ? tokens.map((t, ti) => (
+                                  <span
+                                    key={ti}
+                                    style={{ color: `light-dark(${t.lightColor}, ${t.darkColor})` }}
+                                  >
+                                    {t.text}
+                                  </span>
+                                ))
+                              : lineText}
+                            {"\n"}
+                          </Fragment>
+                        );
+                      })
+                    : editContent}
+                </pre>
+                <textarea
+                  ref={textareaRef}
+                  value={editContent}
+                  onChange={(e) => setEditContent(e.target.value)}
+                  onScroll={handleEditScroll}
+                  onKeyDown={handleEditKeyDown}
+                  className="absolute inset-0 w-full h-full bg-transparent font-mono text-[13px] leading-relaxed px-4 py-3 outline-none resize-none border-none m-0 whitespace-pre-wrap break-words"
+                  style={{
+                    tabSize: 2,
+                    color: "transparent",
+                    caretColor: "var(--foreground)",
+                    WebkitTextFillColor: "transparent",
+                  }}
+                  spellCheck={false}
+                  autoFocus
+                />
+              </div>
+            </div>
+          </div>
+        ) : (
           <div
-            className="code-content"
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
+            ref={codeRef}
+            className={cn(
+              "code-viewer border border-border relative",
+              wordWrap ? "overflow-x-hidden word-wrap" : "overflow-x-auto",
+              searchOpen ? "rounded-b-md" : "rounded-md",
+              className
+            )}
+            style={{ "--cv-gutter-w": `${gutterW + 1}ch` } as React.CSSProperties}
+            onClick={handleClick}
+            onMouseUp={handleMouseUp}
+          >
+            <div
+              className="code-content"
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
+          </div>
+        )}
 
-          {/* Floating toolbar — only when text is selected */}
-          {selectedRange && toolbarPos && (
-            <button
-              className="absolute z-20 flex items-center gap-1 px-1.5 py-0.5 rounded border border-border bg-background shadow-md text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors cursor-pointer"
-              style={{ top: toolbarPos.y, left: toolbarPos.x }}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                handleAddToGhost(selectedRange.start, selectedRange.end, selectedRange.text);
-              }}
-            >
-              <Ghost className="w-2.5 h-2.5" />
-              Ghost
-            </button>
+        {/* Floating toolbar — fixed position, outside code container to avoid selection loss */}
+        <div
+          ref={toolbarRef}
+          className={cn(
+            "fixed z-50 flex items-center rounded-md border border-border bg-background shadow-lg overflow-hidden",
+            selectedRange && toolbarPos
+              ? "opacity-100 translate-y-0"
+              : "opacity-0 translate-y-1 pointer-events-none"
           )}
+          style={{
+            top: toolbarPos?.y ?? -999,
+            left: toolbarPos?.x ?? -999,
+            transition: "opacity 120ms ease-out, transform 120ms ease-out",
+          }}
+        >
+          <button
+            className="flex items-center gap-1 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors cursor-pointer"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (selectedRange) handleCopySelection(selectedRange.text);
+            }}
+          >
+            {copied ? <Check className="w-2.5 h-2.5 text-green-500" /> : <Copy className="w-2.5 h-2.5" />}
+            {copied ? "Copied" : "Copy"}
+          </button>
+          <div className="w-px h-4 bg-border" />
+          <button
+            className="flex items-center gap-1 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors cursor-pointer"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (selectedRange) handleAddToGhost(selectedRange.start, selectedRange.end, selectedRange.text);
+            }}
+          >
+            <Ghost className="w-2.5 h-2.5" />
+            Ghost
+          </button>
         </div>
       </div>
+
+      {/* Commit dialog */}
+      {commitDialogOpen && filePath && branch && (
+        <CommitDialog
+          open={commitDialogOpen}
+          onOpenChange={setCommitDialogOpen}
+          filename={filePath}
+          branch={branch}
+          originalContent={content}
+          newContent={editContent}
+          onCommit={handleCommit}
+        />
+      )}
     </div>
   );
 }

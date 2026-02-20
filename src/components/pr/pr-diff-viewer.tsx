@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition, useRef, useCallback, useEffect, useMemo } from "react";
+import React, { useState, useTransition, useRef, useCallback, useEffect, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -25,6 +25,7 @@ import {
   ChevronDown,
   ChevronUp,
   WrapText,
+  Columns2,
   Plus,
   X,
   Loader2,
@@ -42,13 +43,16 @@ import {
   Ghost,
   GitCommitHorizontal,
   Search,
+  Pencil,
 } from "lucide-react";
 import {
   addPRReviewComment,
   commitSuggestion,
+  commitFileEditOnPR,
   resolveReviewThread,
   unresolveReviewThread,
 } from "@/app/(app)/repos/[owner]/[repo]/pulls/pr-actions";
+import { CommitDialog } from "@/components/shared/commit-dialog";
 import { ResizeHandle } from "@/components/ui/resize-handle";
 import { useGlobalChatOptional } from "@/components/shared/global-chat-provider";
 import { MarkdownEditor, type MarkdownEditorRef } from "@/components/shared/markdown-editor";
@@ -103,6 +107,7 @@ interface PRDiffViewerProps {
   pullNumber?: number;
   headSha?: string;
   headBranch?: string;
+  baseSha?: string;
   canWrite?: boolean;
   highlightData?: Record<string, Record<string, SyntaxToken[]>>;
   participants?: Array<{ login: string; avatar_url: string }>;
@@ -129,6 +134,7 @@ export function PRDiffViewer({
   pullNumber,
   headSha,
   headBranch,
+  baseSha,
   canWrite = true,
   highlightData = {},
   participants,
@@ -148,10 +154,16 @@ export function PRDiffViewer({
     return 0;
   });
   const [wordWrap, setWordWrap] = useState(true);
+  const [splitView, setSplitView] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(220);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [viewedFiles, setViewedFiles] = useState<Set<string>>(new Set());
-  const [sidebarMode, setSidebarMode] = useState<SidebarMode>("files");
+  const [sidebarMode, setSidebarMode] = useState<SidebarMode>(() => {
+    const tab = searchParams.get("tab");
+    if (tab === "reviews" || tab === "commits") return tab;
+    return "files";
+  });
   const [scrollToLine, setScrollToLine] = useState<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const totalAdditions = files.reduce((s, f) => s + f.additions, 0);
@@ -169,6 +181,17 @@ export function PRDiffViewer({
     url.searchParams.set("file", currentFile.filename);
     window.history.replaceState(null, "", url.toString());
   }, [activeIndex, currentFile]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync sidebar mode to URL ?tab= param
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (sidebarMode === "files") {
+      url.searchParams.delete("tab");
+    } else {
+      url.searchParams.set("tab", sidebarMode);
+    }
+    window.history.replaceState(null, "", url.toString());
+  }, [sidebarMode]);
 
   const goToPrev = useCallback(
     () => setActiveIndex((i) => Math.max(0, i - 1)),
@@ -221,13 +244,15 @@ export function PRDiffViewer({
   return (
     <div ref={containerRef} className="flex flex-1 min-h-0 min-w-0">
       {/* File sidebar */}
-      <div
-        className="hidden lg:flex flex-col shrink-0 border-r border-border"
-        style={{
-          width: sidebarWidth,
-          transition: isDragging ? "none" : "width 0.2s cubic-bezier(0.4,0,0.2,1)",
-        }}
-      >
+      {!sidebarCollapsed && (
+        <>
+          <div
+            className="hidden lg:flex flex-col shrink-0 border-r border-border"
+            style={{
+              width: sidebarWidth,
+              transition: isDragging ? "none" : "width 0.2s cubic-bezier(0.4,0,0.2,1)",
+            }}
+          >
         {/* Sidebar header */}
         <div className="shrink-0 flex items-center gap-2 px-3 py-2">
           <span className="text-[11px] font-mono text-foreground font-medium">
@@ -303,7 +328,7 @@ export function PRDiffViewer({
         )}
 
         {/* Sidebar content */}
-        <div className="flex-1 overflow-y-auto py-1">
+        <div className="flex-1 overflow-y-auto overscroll-contain py-1">
           {sidebarMode === "files" ? (
             <>
               {files.map((file, i) => {
@@ -379,18 +404,20 @@ export function PRDiffViewer({
               pullNumber={pullNumber}
             />
           )}
-        </div>
-      </div>
+            </div>
+          </div>
 
-      {/* Sidebar resize handle */}
-      <div className="hidden lg:flex shrink-0">
-        <ResizeHandle
-          onResize={handleSidebarResize}
-          onDragStart={() => setIsDragging(true)}
-          onDragEnd={() => setIsDragging(false)}
-          onDoubleClick={() => setSidebarWidth(220)}
-        />
-      </div>
+          {/* Sidebar resize handle */}
+          <div className="hidden lg:flex shrink-0">
+            <ResizeHandle
+              onResize={handleSidebarResize}
+              onDragStart={() => setIsDragging(true)}
+              onDragEnd={() => setIsDragging(false)}
+              onDoubleClick={() => setSidebarWidth(220)}
+            />
+          </div>
+        </>
+      )}
 
       {/* Single file diff view */}
       <div className="flex-1 min-w-0 min-h-0 flex flex-col">
@@ -400,7 +427,11 @@ export function PRDiffViewer({
             index={activeIndex}
             total={files.length}
             wordWrap={wordWrap}
+            splitView={splitView}
             onToggleWrap={() => setWordWrap((w) => !w)}
+            onToggleSplit={() => setSplitView((s) => !s)}
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={() => setSidebarCollapsed((c) => !c)}
             onPrev={goToPrev}
             onNext={goToNext}
             fileComments={commentsByFile.get(currentFile.filename) || []}
@@ -411,6 +442,7 @@ export function PRDiffViewer({
             pullNumber={pullNumber}
             headSha={headSha}
             headBranch={headBranch}
+            baseSha={baseSha}
             scrollToLine={scrollToLine}
             onScrollComplete={() => setScrollToLine(null)}
             canWrite={canWrite}
@@ -429,7 +461,11 @@ function SingleFileDiff({
   index,
   total,
   wordWrap,
+  splitView,
   onToggleWrap,
+  onToggleSplit,
+  sidebarCollapsed,
+  onToggleSidebar,
   onPrev,
   onNext,
   fileComments,
@@ -440,6 +476,7 @@ function SingleFileDiff({
   pullNumber,
   headSha,
   headBranch,
+  baseSha,
   scrollToLine,
   onScrollComplete,
   canWrite = true,
@@ -451,7 +488,11 @@ function SingleFileDiff({
   index: number;
   total: number;
   wordWrap: boolean;
+  splitView: boolean;
   onToggleWrap: () => void;
+  onToggleSplit: () => void;
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
   onPrev: () => void;
   onNext: () => void;
   fileComments: ReviewComment[];
@@ -462,6 +503,7 @@ function SingleFileDiff({
   pullNumber?: number;
   headSha?: string;
   headBranch?: string;
+  baseSha?: string;
   scrollToLine?: number | null;
   onScrollComplete?: () => void;
   canWrite?: boolean;
@@ -498,6 +540,7 @@ function SingleFileDiff({
   } | null>(null);
   const [hoverLine, setHoverLine] = useState<number | null>(null);
   const hoverLineRef = useRef<number | null>(null);
+  const [hideReviewComments, setHideReviewComments] = useState(false);
   const selectingFromRef = useRef<{ line: number; side: "LEFT" | "RIGHT" } | null>(null);
 
   // Expand context & full file view state
@@ -508,6 +551,38 @@ function SingleFileDiff({
   const [showFullFile, setShowFullFile] = useState(false);
   const [isLoadingFullFile, setIsLoadingFullFile] = useState(false);
 
+  // Inline edit state
+  const [isEditing, setIsEditing] = useState(false);
+  const [editContent, setEditContent] = useState("");
+  const [originalEditContent, setOriginalEditContent] = useState("");
+  const [baseEditContent, setBaseEditContent] = useState<string | null>(null);
+  const [editSha, setEditSha] = useState<string | null>(null);
+  const [isLoadingEdit, setIsLoadingEdit] = useState(false);
+  const [commitDialogOpen, setCommitDialogOpen] = useState(false);
+  const [editTokens, setEditTokens] = useState<SyntaxToken[][] | null>(null);
+  const [editView, setEditView] = useState<"edit" | "changes">("edit");
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const editPreRef = useRef<HTMLPreElement>(null);
+
+  // Compute which lines were changed by the PR (new-file line numbers from the patch)
+  const prChangedLines = useMemo(() => {
+    if (!file.patch) return new Set<number>();
+    const diffLines = parseDiffPatch(file.patch);
+    const changed = new Set<number>();
+    for (const line of diffLines) {
+      if (line.type === "add" && line.newLineNumber !== undefined) {
+        changed.add(line.newLineNumber);
+      }
+    }
+    return changed;
+  }, [file.patch]);
+
+  // Sorted array for prev/next navigation
+  const prChangedLinesSorted = useMemo(
+    () => Array.from(prChangedLines).sort((a, b) => a - b),
+    [prChangedLines]
+  );
+
   // Search state
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -517,7 +592,7 @@ function SingleFileDiff({
   const isHoveringDiffRef = useRef(false);
   const searchMatchesRef = useRef<number[]>([]);
 
-  // Reset search when file changes
+  // Reset search and edit when file changes
   const prevFilenameRef = useRef(file.filename);
   if (prevFilenameRef.current !== file.filename) {
     prevFilenameRef.current = file.filename;
@@ -525,6 +600,16 @@ function SingleFileDiff({
       setSearchOpen(false);
       setSearchQuery("");
       setCurrentSearchIdx(-1);
+    }
+    if (isEditing) {
+      setIsEditing(false);
+      setEditContent("");
+      setOriginalEditContent("");
+      setBaseEditContent(null);
+      setEditSha(null);
+      setEditTokens(null);
+      setEditView("edit");
+      setCommitDialogOpen(false);
     }
   }
 
@@ -662,6 +747,188 @@ function SingleFileDiff({
     }
   }, [fileContent, fullFileTokens, owner, repo, headSha, file.filename]);
 
+  const handleStartEdit = useCallback(async () => {
+    if (!owner || !repo || !headBranch) return;
+    setIsLoadingEdit(true);
+    try {
+      // Fetch head content (for editing) and base content (for merged diff) in parallel
+      const headUrl = `/api/file-content?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(file.filename)}&ref=${encodeURIComponent(headBranch)}&highlight=true`;
+      const fetches: Promise<Response>[] = [fetch(headUrl)];
+      if (baseSha) {
+        const baseUrl = `/api/file-content?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(file.filename)}&ref=${encodeURIComponent(baseSha)}`;
+        fetches.push(fetch(baseUrl));
+      }
+      const [headRes, baseRes] = await Promise.all(fetches);
+      if (!headRes.ok) return;
+      const headData = await headRes.json();
+      const content = headData.content as string;
+      if (content == null) return;
+      setEditContent(content);
+      setOriginalEditContent(content);
+      setEditSha(headData.sha || null);
+      setEditTokens(headData.tokens || null);
+      setEditView("edit");
+      // Base content for merged diff on Changes tab
+      if (baseRes?.ok) {
+        const baseData = await baseRes.json();
+        setBaseEditContent(baseData.content as string);
+      } else {
+        setBaseEditContent(null);
+      }
+      setIsEditing(true);
+    } catch {
+      // fetch or parse error
+    } finally {
+      setIsLoadingEdit(false);
+    }
+  }, [owner, repo, headBranch, baseSha, file.filename]);
+
+  const handleCancelEdit = useCallback(() => {
+    setIsEditing(false);
+    setEditContent("");
+    setOriginalEditContent("");
+    setBaseEditContent(null);
+    setEditSha(null);
+    setEditTokens(null);
+    setEditView("edit");
+  }, []);
+
+  const diffRouter = useRouter();
+  const handleCommitEdit = useCallback(async (message: string) => {
+    if (!owner || !repo || !pullNumber || !headBranch || !editSha) return;
+    const result = await commitFileEditOnPR(
+      owner,
+      repo,
+      pullNumber,
+      file.filename,
+      headBranch,
+      editContent,
+      editSha,
+      message
+    );
+    if (result.error) {
+      throw new Error(result.error);
+    }
+    setIsEditing(false);
+    setEditContent("");
+    setOriginalEditContent("");
+    setBaseEditContent(null);
+    setEditSha(null);
+    setEditTokens(null);
+    setEditView("edit");
+    diffRouter.refresh();
+  }, [owner, repo, pullNumber, headBranch, editSha, editContent, file.filename, diffRouter]);
+
+  // Cmd+S to open commit dialog while editing
+  useEffect(() => {
+    if (!isEditing) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+        e.preventDefault();
+        setCommitDialogOpen(true);
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isEditing]);
+
+  // Sync scroll between textarea and pre overlay
+  const handleEditScroll = useCallback(() => {
+    if (editTextareaRef.current && editPreRef.current) {
+      editPreRef.current.scrollTop = editTextareaRef.current.scrollTop;
+      editPreRef.current.scrollLeft = editTextareaRef.current.scrollLeft;
+    }
+  }, []);
+
+  // Handle textarea input without breaking undo — read from DOM
+  const handleEditInput = useCallback(() => {
+    if (editTextareaRef.current) {
+      const val = editTextareaRef.current.value;
+      setEditContent(val);
+    }
+  }, []);
+
+  // Tab key inserts indentation instead of moving focus
+  const handleEditKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const ta = e.currentTarget;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+
+      if (e.shiftKey) {
+        // Shift+Tab: dedent selected lines
+        const val = ta.value;
+        const lineStart = val.lastIndexOf("\n", start - 1) + 1;
+        const lineEnd = end;
+        const selectedText = val.slice(lineStart, lineEnd);
+        const dedented = selectedText.replace(/^  /gm, "");
+        const diff = selectedText.length - dedented.length;
+
+        // Use execCommand to preserve undo
+        ta.selectionStart = lineStart;
+        ta.selectionEnd = lineEnd;
+        document.execCommand("insertText", false, dedented);
+        ta.selectionStart = Math.max(lineStart, start - (start > lineStart ? Math.min(2, diff) : 0));
+        ta.selectionEnd = end - diff;
+      } else if (start !== end) {
+        // Tab with selection: indent all selected lines
+        const val = ta.value;
+        const lineStart = val.lastIndexOf("\n", start - 1) + 1;
+        const selectedText = val.slice(lineStart, end);
+        const indented = selectedText.replace(/^/gm, "  ");
+        const lineCount = selectedText.split("\n").length;
+
+        ta.selectionStart = lineStart;
+        ta.selectionEnd = end;
+        document.execCommand("insertText", false, indented);
+        ta.selectionStart = start + 2;
+        ta.selectionEnd = end + lineCount * 2;
+      } else {
+        // No selection: insert 2 spaces via execCommand (preserves undo)
+        document.execCommand("insertText", false, "  ");
+      }
+      setEditContent(ta.value);
+    }
+  }, []);
+
+  // Sync textarea DOM value when editContent changes programmatically (initial load)
+  const editContentInitRef = useRef(false);
+  useEffect(() => {
+    if (isEditing && editTextareaRef.current && !editContentInitRef.current) {
+      editTextareaRef.current.value = editContent;
+      editContentInitRef.current = true;
+    }
+    if (!isEditing) editContentInitRef.current = false;
+  }, [isEditing, editContent]);
+
+  // Debounced re-tokenization — skip if content matches original (initial load already has tokens)
+  const prevEditContentRef = useRef<string>("");
+  useEffect(() => {
+    if (!isEditing || !editContent) return;
+    // Skip re-tokenization if content hasn't changed from what we already have tokens for
+    if (editContent === prevEditContentRef.current) return;
+    prevEditContentRef.current = editContent;
+    // Don't re-fetch on initial load — handleStartEdit already fetched tokens
+    if (editContent === originalEditContent && editTokens) return;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch("/api/highlight-code", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: editContent, filename: file.filename }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setEditTokens(data.tokens);
+        }
+      } catch {
+        // silently fail — keep stale tokens
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [isEditing, editContent, originalEditContent, editTokens, file.filename]);
+
   const handleExpandHunk = useCallback(async (hunkIdx: number) => {
     setIsLoadingExpand(hunkIdx);
     const content = await fetchFileContent();
@@ -784,6 +1051,10 @@ function SingleFileDiff({
       ? { start: Math.min(commentRange.startLine, commentRange.endLine), end: Math.max(commentRange.startLine, commentRange.endLine), side: commentRange.side }
       : null;
 
+  // Build split rows for side-by-side view
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const splitRows = useMemo(() => splitView ? buildSplitRows(lines) : [], [splitView, file.patch]);
+
   const handleLineClick = (lineNum: number, side: "LEFT" | "RIGHT", shiftKey: boolean) => {
     // If we're in a drag selection, ignore click — mouseup already handled it
     if (selectingFromRef.current) return;
@@ -842,6 +1113,15 @@ function SingleFileDiff({
       {/* Sticky file header */}
       <div className="shrink-0 sticky top-0 z-10 bg-card/95 backdrop-blur-sm border-b border-border">
         <div className="flex items-center gap-2 px-3 py-1.5">
+        {/* Sidebar collapse/expand toggle */}
+        <button
+          onClick={onToggleSidebar}
+          className="hidden lg:flex p-0.5 rounded transition-colors cursor-pointer shrink-0 text-muted-foreground/60 hover:text-muted-foreground hover:bg-accent/60"
+          title={sidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+        >
+          {sidebarCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronLeft className="w-3.5 h-3.5" />}
+        </button>
+
         <FileIcon
           className={cn("w-3.5 h-3.5 shrink-0", getFileIconColor(file.status))}
         />
@@ -884,6 +1164,64 @@ function SingleFileDiff({
           {viewed ? "Viewed" : "Mark viewed"}
         </button>
 
+        {/* Edit file inline */}
+        {canWrite && headBranch && file.status !== "removed" && file.filename && (
+          isEditing ? (
+            <div className="flex items-center gap-1 shrink-0">
+              {/* Edit / Changes toggle */}
+              <div className="flex items-center bg-secondary/60 rounded overflow-hidden mr-1">
+                <button
+                  onClick={() => setEditView("edit")}
+                  className={cn(
+                    "px-2 py-0.5 text-[10px] font-mono transition-colors cursor-pointer",
+                    editView === "edit"
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => setEditView("changes")}
+                  className={cn(
+                    "px-2 py-0.5 text-[10px] font-mono transition-colors cursor-pointer",
+                    editView === "changes"
+                      ? "bg-accent text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  Changes
+                </button>
+              </div>
+              <button
+                onClick={handleCancelEdit}
+                className="px-2 py-0.5 rounded text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => setCommitDialogOpen(true)}
+                className="px-2 py-0.5 rounded text-[10px] font-mono bg-foreground text-background hover:bg-foreground/90 transition-colors cursor-pointer"
+              >
+                Save
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={handleStartEdit}
+              disabled={isLoadingEdit}
+              className="p-0.5 rounded transition-colors cursor-pointer shrink-0 text-muted-foreground/60 hover:text-muted-foreground hover:bg-accent/60 disabled:opacity-40"
+              title="Edit file"
+            >
+              {isLoadingEdit ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Pencil className="w-3.5 h-3.5" />
+              )}
+            </button>
+          )
+        )}
+
         {/* Full file toggle */}
         <button
           onClick={handleToggleFullFile}
@@ -902,6 +1240,124 @@ function SingleFileDiff({
           ) : (
             <FileCode className="w-3.5 h-3.5" />
           )}
+        </button>
+
+        {/* Prev/next PR change navigation — visible in edit mode or full file view */}
+        {(isEditing || showFullFile) && prChangedLinesSorted.length > 0 && (
+          <div className="flex items-center gap-0.5 shrink-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-success/60 shrink-0" />
+            <button
+              disabled={isEditing && editView !== "edit"}
+              onClick={() => {
+                if (isEditing && editView === "edit" && editTextareaRef.current) {
+                  const cursorPos = editTextareaRef.current.selectionStart;
+                  const currentLine = editContent.slice(0, cursorPos).split("\n").length;
+                  const prev = [...prChangedLinesSorted].reverse().find(l => l < currentLine);
+                  const target = prev ?? prChangedLinesSorted[prChangedLinesSorted.length - 1];
+                  if (target !== undefined) {
+                    const container = editTextareaRef.current.closest(".overflow-auto");
+                    const gutterLine = container?.querySelector(`[data-edit-line="${target}"]`);
+                    gutterLine?.scrollIntoView({ block: "center", behavior: "smooth" });
+                    const edLines = editContent.split("\n");
+                    const pos = edLines.slice(0, target - 1).reduce((s, l) => s + l.length + 1, 0);
+                    editTextareaRef.current.focus();
+                    editTextareaRef.current.setSelectionRange(pos, pos);
+                  }
+                } else if (diffContainerRef.current) {
+                  const rows = Array.from(diffContainerRef.current.querySelectorAll<HTMLElement>("tr.diff-add-row"));
+                  if (rows.length === 0) return;
+                  const containerRect = diffContainerRef.current.getBoundingClientRect();
+                  const centerY = containerRect.top + containerRect.height / 2;
+                  // Find the row closest to but above center
+                  let target = rows[rows.length - 1];
+                  for (let ri = rows.length - 1; ri >= 0; ri--) {
+                    if (rows[ri].getBoundingClientRect().top < centerY - 10) {
+                      target = ri > 0 ? rows[ri - 1] : rows[rows.length - 1];
+                      break;
+                    }
+                    target = rows[ri];
+                  }
+                  target.scrollIntoView({ block: "center", behavior: "smooth" });
+                  target.classList.add("!brightness-125");
+                  setTimeout(() => target.classList.remove("!brightness-125"), 1000);
+                }
+              }}
+              className="p-0.5 rounded text-muted-foreground/50 hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer disabled:opacity-30 disabled:pointer-events-none"
+              title="Previous PR change"
+            >
+              <ChevronUp className="w-3 h-3" />
+            </button>
+            <button
+              disabled={isEditing && editView !== "edit"}
+              onClick={() => {
+                if (isEditing && editView === "edit" && editTextareaRef.current) {
+                  const cursorPos = editTextareaRef.current.selectionStart;
+                  const currentLine = editContent.slice(0, cursorPos).split("\n").length;
+                  const next = prChangedLinesSorted.find(l => l > currentLine);
+                  const target = next ?? prChangedLinesSorted[0];
+                  if (target !== undefined) {
+                    const container = editTextareaRef.current.closest(".overflow-auto");
+                    const gutterLine = container?.querySelector(`[data-edit-line="${target}"]`);
+                    gutterLine?.scrollIntoView({ block: "center", behavior: "smooth" });
+                    const edLines = editContent.split("\n");
+                    const pos = edLines.slice(0, target - 1).reduce((s, l) => s + l.length + 1, 0);
+                    editTextareaRef.current.focus();
+                    editTextareaRef.current.setSelectionRange(pos, pos);
+                  }
+                } else if (diffContainerRef.current) {
+                  const rows = Array.from(diffContainerRef.current.querySelectorAll<HTMLElement>("tr.diff-add-row"));
+                  if (rows.length === 0) return;
+                  const containerRect = diffContainerRef.current.getBoundingClientRect();
+                  const centerY = containerRect.top + containerRect.height / 2;
+                  // Find the first row below center
+                  let target = rows[0];
+                  for (const row of rows) {
+                    if (row.getBoundingClientRect().top > centerY + 10) {
+                      target = row;
+                      break;
+                    }
+                  }
+                  target.scrollIntoView({ block: "center", behavior: "smooth" });
+                  target.classList.add("!brightness-125");
+                  setTimeout(() => target.classList.remove("!brightness-125"), 1000);
+                }
+              }}
+              className="p-0.5 rounded text-muted-foreground/50 hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer disabled:opacity-30 disabled:pointer-events-none"
+              title="Next PR change"
+            >
+              <ChevronDown className="w-3 h-3" />
+            </button>
+          </div>
+        )}
+
+        {/* Hide review comments toggle */}
+        {fileComments.length > 0 && (
+          <button
+            onClick={() => setHideReviewComments((h) => !h)}
+            className={cn(
+              "p-0.5 rounded transition-colors cursor-pointer shrink-0",
+              hideReviewComments
+                ? "bg-accent text-foreground"
+                : "text-muted-foreground/60 hover:text-muted-foreground hover:bg-accent/60"
+            )}
+            title={hideReviewComments ? "Show review comments" : "Hide review comments"}
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+          </button>
+        )}
+
+        {/* Split view toggle */}
+        <button
+          onClick={onToggleSplit}
+          className={cn(
+            "p-0.5 rounded transition-colors cursor-pointer shrink-0",
+            splitView
+              ? "bg-accent text-foreground"
+              : "text-muted-foreground/60 hover:text-muted-foreground hover:bg-accent/60"
+          )}
+          title={splitView ? "Unified diff" : "Split diff"}
+        >
+          <Columns2 className="w-3.5 h-3.5" />
         </button>
 
         {/* Wrap toggle */}
@@ -1006,11 +1462,190 @@ function SingleFileDiff({
       <div
         ref={diffContainerRef}
         className={cn(
-          "flex-1 overflow-y-auto",
+          "flex-1 overflow-y-auto overscroll-contain",
           wordWrap ? "overflow-x-hidden" : "overflow-x-auto"
         )}
       >
-        {showFullFile && fileContent ? (
+        {isEditing ? (
+          <>
+            {/* Editor — always mounted to preserve undo history */}
+            <div className={cn("flex flex-1 min-h-0 overflow-auto", editView !== "edit" && "hidden")}>
+              {/* Line numbers gutter with PR change markers */}
+              <div className="shrink-0 select-none text-right border-r border-border/50 pt-4 pb-4 sticky left-0 bg-code-bg z-[1]">
+                {editContent.split("\n").map((_, i) => {
+                  const lineNum = i + 1;
+                  const isPrChanged = prChangedLines.has(lineNum);
+                  return (
+                    <div
+                      key={i}
+                      data-edit-line={lineNum}
+                      className={cn(
+                        "text-[12.5px] leading-[20px] font-mono h-[20px] pr-2 pl-2 flex items-center justify-end gap-1",
+                        isPrChanged ? "text-muted-foreground/60" : "text-muted-foreground/40",
+                        isPrChanged && "bg-diff-add-bg"
+                      )}
+                    >
+                      {isPrChanged && (
+                        <span className="w-[3px] h-3 rounded-full bg-success/60 shrink-0" />
+                      )}
+                      {lineNum}
+                    </div>
+                  );
+                })}
+              </div>
+              {/* Code area: relative container with pre + absolute textarea overlay */}
+              <div className="flex-1 relative min-h-[400px]">
+                <pre
+                  ref={editPreRef}
+                  className={cn(
+                    "pointer-events-none font-mono text-[12.5px] leading-[20px] p-4 overflow-hidden m-0 diff-syntax",
+                    wordWrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"
+                  )}
+                  aria-hidden="true"
+                  style={{ tabSize: 2 }}
+                >
+                  {editTokens
+                    ? editContent.split("\n").map((lineText, lineIdx) => {
+                        const tokens = editTokens[lineIdx];
+                        return (
+                          <React.Fragment key={lineIdx}>
+                            {tokens ? (
+                              tokens.map((t, ti) => (
+                                <span
+                                  key={ti}
+                                  style={{ color: `light-dark(${t.lightColor}, ${t.darkColor})` }}
+                                >
+                                  {t.text}
+                                </span>
+                              ))
+                            ) : (
+                              lineText
+                            )}
+                            {"\n"}
+                          </React.Fragment>
+                        );
+                      })
+                    : editContent}
+                </pre>
+                <textarea
+                  ref={editTextareaRef}
+                  defaultValue={editContent}
+                  onInput={handleEditInput}
+                  onKeyDown={handleEditKeyDown}
+                  onScroll={handleEditScroll}
+                  className={cn(
+                    "absolute inset-0 w-full h-full bg-transparent font-mono text-[12.5px] leading-[20px] p-4 outline-none resize-none border-none m-0",
+                    wordWrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"
+                  )}
+                  style={{
+                    tabSize: 2,
+                    color: "transparent",
+                    caretColor: "var(--foreground)",
+                    WebkitTextFillColor: "transparent",
+                  }}
+                  spellCheck={false}
+                  autoFocus
+                />
+              </div>
+            </div>
+            {/* Changes view — merged diff (base → edited content), same style as full file view */}
+            {editView === "changes" && (
+              <div className="flex-1 overflow-auto">
+                {(() => {
+                  const diffBase = baseEditContent ?? originalEditContent;
+                  const noChanges = editContent === diffBase;
+                  if (noChanges) {
+                    return (
+                      <div className="px-4 py-16 text-center">
+                        <p className="text-[11px] text-muted-foreground/50 font-mono">
+                          No changes
+                        </p>
+                      </div>
+                    );
+                  }
+                  const diffEntries = computeLineDiff(diffBase, editContent);
+                  return (
+                  <table className={cn("w-full border-collapse", wordWrap && "table-fixed")}>
+                    {wordWrap && (
+                      <colgroup>
+                        <col className="w-[3px]" />
+                        <col className="w-10" />
+                        <col />
+                      </colgroup>
+                    )}
+                    <tbody>
+                      {diffEntries.map((entry, i) => {
+                        const isGapSeparator = entry.type === "context" && entry.content === "···";
+                        if (isGapSeparator) {
+                          return (
+                            <tr key={i}>
+                              <td colSpan={3} className="py-1.5 text-center text-[11px] font-mono text-muted-foreground/30 bg-secondary/20 border-y border-border/30">
+                                <UnfoldVertical className="w-3 h-3 inline-block mr-1 opacity-50" />
+                              </td>
+                            </tr>
+                          );
+                        }
+                        const isAdd = entry.type === "add";
+                        const isDel = entry.type === "remove";
+                        return (
+                          <tr
+                            key={i}
+                            className={cn(
+                              isAdd && "diff-add-row",
+                              isDel && "diff-del-row"
+                            )}
+                          >
+                            {/* Gutter bar */}
+                            <td className={cn(
+                              "w-[3px] p-0 sticky left-0 z-[1]",
+                              isAdd ? "bg-success" : isDel ? "bg-destructive" : ""
+                            )} />
+                            {/* Line number */}
+                            <td className={cn(
+                              "w-10 py-0 pr-2 text-right text-[11px] font-mono select-none border-r border-border/40 sticky left-[3px] z-[1]",
+                              isAdd
+                                ? "bg-diff-add-gutter text-diff-add-gutter"
+                                : isDel
+                                  ? "bg-diff-del-gutter text-diff-del-gutter"
+                                  : "text-muted-foreground/30"
+                            )}>
+                              {isAdd ? entry.newLineNumber : isDel ? entry.oldLineNumber : entry.newLineNumber}
+                            </td>
+                            {/* Content */}
+                            <td className={cn(
+                              "py-0 font-mono text-[12.5px] leading-[20px]",
+                              wordWrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
+                              isAdd && "bg-diff-add-bg",
+                              isDel && "bg-diff-del-bg"
+                            )}>
+                              <div className="flex">
+                                <span className={cn(
+                                  "inline-block w-5 text-center shrink-0 select-none",
+                                  isAdd ? "text-success/50" : isDel ? "text-destructive/50" : "text-transparent"
+                                )}>
+                                  {isAdd ? "+" : isDel ? "-" : " "}
+                                </span>
+                                <span className="pl-1">
+                                  <span className={cn(
+                                    isAdd && "text-diff-add-text",
+                                    isDel && "text-diff-del-text"
+                                  )}>
+                                    {entry.content}
+                                  </span>
+                                </span>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  );
+                })()}
+              </div>
+            )}
+          </>
+        ) : showFullFile && fileContent ? (
           <FullFileView
             fileContent={fileContent}
             lines={lines}
@@ -1020,6 +1655,43 @@ function SingleFileDiff({
             fullFileTokens={fullFileTokens}
           />
         ) : lines.length > 0 ? (
+          splitView ? (
+            <SplitDiffTable
+              lines={lines}
+              splitRows={splitRows}
+              wordWrap={wordWrap}
+              canComment={canComment}
+              commentsByLine={commentsByLine}
+              commentRange={commentRange}
+              selectionRange={selectionRange}
+              fileHighlightData={fileHighlightData}
+              expandedLines={expandedLines}
+              hunkInfos={hunkInfos}
+              isLoadingExpand={isLoadingExpand}
+              onExpandHunk={handleExpandHunk}
+              onLineClick={handleLineClick}
+              onLineMouseDown={handleLineMouseDown}
+              onLineHover={handleLineHover}
+              onCloseComment={() => {
+                setCommentRange(null);
+                setSelectingFrom(null);
+                setHoverLine(null);
+              }}
+              commentStartLine={commentRange?.startLine}
+              selectedLinesContent={selectedLinesContent}
+              selectedCodeForAI={selectedCodeForAI}
+              owner={owner}
+              repo={repo}
+              pullNumber={pullNumber}
+              headSha={headSha}
+              headBranch={headBranch}
+              filename={file.filename}
+              canWrite={canWrite}
+              onAddContext={onAddContext}
+              participants={participants}
+              hideComments={hideReviewComments}
+            />
+          ) : (
           <table
             className={cn("w-full border-collapse", wordWrap && "table-fixed")}
           >
@@ -1043,7 +1715,7 @@ function SingleFileDiff({
 
                 // Find inline comments for this line
                 const inlineComments: ReviewComment[] = [];
-                if (lineNum !== undefined) {
+                if (lineNum !== undefined && !hideReviewComments) {
                   const rightComments =
                     commentsByLine.get(`RIGHT-${lineNum}`) || [];
                   const leftComments =
@@ -1147,6 +1819,7 @@ function SingleFileDiff({
               })}
             </tbody>
           </table>
+          )
         ) : (
           <div className="px-4 py-16 text-center">
             <File className="w-5 h-5 text-muted-foreground/30 mx-auto mb-2" />
@@ -1158,6 +1831,19 @@ function SingleFileDiff({
           </div>
         )}
       </div>
+
+      {/* Commit dialog for inline edits */}
+      {isEditing && headBranch && (
+        <CommitDialog
+          open={commitDialogOpen}
+          onOpenChange={setCommitDialogOpen}
+          filename={file.filename}
+          branch={headBranch}
+          originalContent={originalEditContent}
+          newContent={editContent}
+          onCommit={handleCommitEdit}
+        />
+      )}
     </div>
   );
 }
@@ -1367,7 +2053,7 @@ function DiffLineRow({
                 ) : (
                   <span className="diff-syntax">
                     {syntaxTokens.map((t, ti) => (
-                      <span key={ti} style={{ "--shiki-light": t.lightColor, "--shiki-dark": t.darkColor } as React.CSSProperties}>
+                      <span key={ti} style={{ color: `light-dark(${t.lightColor}, ${t.darkColor})` }}>
                         {t.text}
                       </span>
                     ))}
@@ -1821,6 +2507,486 @@ function InlineCommentDisplay({
   );
 }
 
+// ── Split Diff View ──
+
+interface SplitRow {
+  type: "pair" | "header";
+  left: DiffLine | null;
+  right: DiffLine | null;
+  headerContent?: string;
+  hunkIndex?: number;
+}
+
+function buildSplitRows(lines: DiffLine[]): SplitRow[] {
+  const rows: SplitRow[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    if (line.type === "header") {
+      rows.push({ type: "header", left: null, right: null, headerContent: line.content, hunkIndex: i });
+      i++;
+      continue;
+    }
+
+    if (line.type === "context") {
+      rows.push({ type: "pair", left: line, right: line });
+      i++;
+      continue;
+    }
+
+    // Collect consecutive remove/add blocks
+    const removes: DiffLine[] = [];
+    const adds: DiffLine[] = [];
+
+    while (i < lines.length && lines[i].type === "remove") {
+      removes.push(lines[i]);
+      i++;
+    }
+    while (i < lines.length && lines[i].type === "add") {
+      adds.push(lines[i]);
+      i++;
+    }
+
+    // Pair them up
+    const maxLen = Math.max(removes.length, adds.length);
+    for (let j = 0; j < maxLen; j++) {
+      rows.push({
+        type: "pair",
+        left: j < removes.length ? removes[j] : null,
+        right: j < adds.length ? adds[j] : null,
+      });
+    }
+  }
+
+  return rows;
+}
+
+function SplitDiffTable({
+  lines,
+  splitRows,
+  wordWrap,
+  canComment,
+  commentsByLine,
+  commentRange,
+  selectionRange,
+  fileHighlightData,
+  expandedLines,
+  hunkInfos,
+  isLoadingExpand,
+  onExpandHunk,
+  onLineClick,
+  onLineMouseDown,
+  onLineHover,
+  onCloseComment,
+  commentStartLine,
+  selectedLinesContent,
+  selectedCodeForAI,
+  owner,
+  repo,
+  pullNumber,
+  headSha,
+  headBranch,
+  filename,
+  canWrite,
+  onAddContext,
+  participants,
+  hideComments = false,
+}: {
+  lines: DiffLine[];
+  splitRows: SplitRow[];
+  wordWrap: boolean;
+  canComment: boolean;
+  commentsByLine: Map<string, ReviewComment[]>;
+  commentRange: { startLine: number; endLine: number; side: "LEFT" | "RIGHT" } | null;
+  selectionRange: { start: number; end: number; side: "LEFT" | "RIGHT" } | null;
+  fileHighlightData?: Record<string, SyntaxToken[]>;
+  expandedLines: Map<number, string[]>;
+  hunkInfos: { index: number; newStart: number; newCount: number; endNewLine: number }[];
+  isLoadingExpand: number | null;
+  onExpandHunk: (hunkIdx: number) => void;
+  onLineClick: (lineNum: number, side: "LEFT" | "RIGHT", shiftKey: boolean) => void;
+  onLineMouseDown: (lineNum: number, side: "LEFT" | "RIGHT") => void;
+  onLineHover: (lineNum: number) => void;
+  onCloseComment: () => void;
+  commentStartLine?: number;
+  selectedLinesContent?: string;
+  selectedCodeForAI?: string;
+  owner?: string;
+  repo?: string;
+  pullNumber?: number;
+  headSha?: string;
+  headBranch?: string;
+  filename: string;
+  canWrite: boolean;
+  onAddContext?: AddContextCallback;
+  participants?: Array<{ login: string; avatar_url: string }>;
+  hideComments?: boolean;
+}) {
+  const [splitRatio, setSplitRatio] = useState(50);
+  const [isDraggingSplit, setIsDraggingSplit] = useState(false);
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+
+  const handleSplitResize = useCallback((clientX: number) => {
+    if (!splitContainerRef.current) return;
+    const rect = splitContainerRef.current.getBoundingClientRect();
+    const ratio = ((clientX - rect.left) / rect.width) * 100;
+    setSplitRatio(Math.max(20, Math.min(80, ratio)));
+  }, []);
+
+  const getSyntaxTokens = (line: DiffLine | null) => {
+    if (!line || !fileHighlightData) return undefined;
+    if (line.type === "remove") return fileHighlightData[`R-${line.oldLineNumber}`];
+    if (line.type === "add") return fileHighlightData[`A-${line.newLineNumber}`];
+    if (line.type === "context") return fileHighlightData[`C-${line.newLineNumber}`];
+    return undefined;
+  };
+
+  const getLineNum = (line: DiffLine | null): number | undefined => {
+    if (!line) return undefined;
+    if (line.type === "remove") return line.oldLineNumber;
+    return line.newLineNumber;
+  };
+
+  // Fixed gutter width = 3px bar + 40px line number = 43px per side
+  const gutterWidth = 43;
+  const leftContentWidth = `calc(${splitRatio}% - ${gutterWidth}px)`;
+  const rightContentWidth = `calc(${100 - splitRatio}% - ${gutterWidth}px)`;
+
+  const isLineSelected = (line: DiffLine | null, side: "LEFT" | "RIGHT") => {
+    if (!selectionRange || !line) return false;
+    const ln = side === "LEFT" ? line.oldLineNumber : line.newLineNumber;
+    return ln !== undefined && ln >= selectionRange.start && ln <= selectionRange.end && side === selectionRange.side;
+  };
+
+  const getInlineComments = (line: DiffLine | null, side: "LEFT" | "RIGHT"): ReviewComment[] => {
+    if (hideComments || !line) return [];
+    const lineNum = side === "LEFT" ? line.oldLineNumber : line.newLineNumber;
+    if (lineNum === undefined) return [];
+    if (side === "LEFT") return commentsByLine.get(`LEFT-${lineNum}`) || [];
+    return commentsByLine.get(`RIGHT-${lineNum}`) || [];
+  };
+
+  const isCommentFormLine = (line: DiffLine | null, side: "LEFT" | "RIGHT") => {
+    if (!commentRange || !line) return false;
+    const lineNum = side === "LEFT" ? line.oldLineNumber : line.newLineNumber;
+    return lineNum !== undefined && lineNum === commentRange.endLine && side === commentRange.side;
+  };
+
+  const renderCellContent = (line: DiffLine | null, tokens: SyntaxToken[] | undefined) => {
+    if (!line) return null;
+    const isAdd = line.type === "add";
+    const isDel = line.type === "remove";
+
+    return (
+      <div className="flex">
+        <span
+          className={cn(
+            "inline-block w-5 text-center shrink-0 select-none",
+            isAdd ? "text-success/50" : isDel ? "text-destructive/50" : "text-transparent"
+          )}
+        >
+          {isAdd ? "+" : isDel ? "-" : " "}
+        </span>
+        <span className="pl-1">
+          {tokens ? (
+            line.segments ? (
+              <SyntaxSegmentedContent segments={line.segments} tokens={tokens} type={line.type} />
+            ) : (
+              <span className="diff-syntax">
+                {tokens.map((t, ti) => (
+                  <span key={ti} style={{ color: `light-dark(${t.lightColor}, ${t.darkColor})` }}>
+                    {t.text}
+                  </span>
+                ))}
+              </span>
+            )
+          ) : line.segments ? (
+            <SegmentedContent segments={line.segments} type={line.type} />
+          ) : (
+            <span className={cn(isAdd && "text-diff-add-text", isDel && "text-diff-del-text")}>
+              {line.content}
+            </span>
+          )}
+        </span>
+      </div>
+    );
+  };
+
+  const renderHalf = (
+    line: DiffLine | null,
+    side: "LEFT" | "RIGHT",
+    tokens: SyntaxToken[] | undefined,
+    isSelected: boolean,
+    isFirst: boolean,
+  ) => {
+    const lineNum = line ? getLineNum(line) : undefined;
+    const isAdd = line?.type === "add";
+    const isDel = line?.type === "remove";
+    const isEmpty = !line;
+
+    return (
+      <>
+        {/* Gutter bar */}
+        <td
+          className={cn(
+            "w-[3px] p-0",
+            isFirst && "sticky left-0 z-[1]",
+            isEmpty
+              ? ""
+              : isSelected
+                ? "bg-muted-foreground"
+                : isAdd
+                  ? "bg-success"
+                  : isDel
+                    ? "bg-destructive"
+                    : ""
+          )}
+        />
+        {/* Line number */}
+        <td
+          className={cn(
+            "w-10 py-0 pr-2 text-right text-[11px] font-mono select-none border-r border-border/40 relative",
+            isEmpty
+              ? "diff-split-empty"
+              : isSelected
+                ? "bg-muted-foreground/[0.06] text-muted-foreground/40"
+                : isAdd
+                  ? "bg-diff-add-gutter text-diff-add-gutter"
+                  : isDel
+                    ? "bg-diff-del-gutter text-diff-del-gutter"
+                    : "text-muted-foreground/30"
+          )}
+        >
+          {canComment && line && lineNum !== undefined && line.type !== "header" && (
+            <button
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onLineMouseDown(lineNum, side);
+              }}
+              onClick={(e) => onLineClick(lineNum, side, e.shiftKey)}
+              className="absolute left-0 top-1/2 -translate-y-1/2 w-4 h-4 flex items-center justify-center opacity-0 group-hover/splitline:opacity-100 transition-opacity text-foreground/50 hover:text-foreground/70 cursor-pointer"
+              title="Add review comment"
+            >
+              <Plus className="w-3 h-3" />
+            </button>
+          )}
+          {lineNum ?? ""}
+        </td>
+        {/* Content */}
+        <td
+          className={cn(
+            "py-0 font-mono text-[12.5px] leading-[20px]",
+            wordWrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
+            isEmpty
+              ? "diff-split-empty"
+              : isAdd
+                ? "bg-diff-add-bg"
+                : isDel
+                  ? "bg-diff-del-bg"
+                  : "",
+            isSelected && !isEmpty && "!bg-muted-foreground/[0.08]",
+            !isFirst && "border-l border-border/30 diff-split-divider"
+          )}
+        >
+          {renderCellContent(line, tokens)}
+        </td>
+      </>
+    );
+  };
+
+  return (
+    <div ref={splitContainerRef} className="relative">
+      <table className={cn("w-full border-collapse", wordWrap && "table-fixed")}>
+        <colgroup>
+          <col className="w-[3px]" />
+          <col className="w-10" />
+          <col style={{ width: leftContentWidth }} />
+          <col className="w-[3px]" />
+          <col className="w-10" />
+          <col style={{ width: rightContentWidth }} />
+        </colgroup>
+        <tbody>
+          {splitRows.map((row, i) => {
+          if (row.type === "header") {
+            const funcMatch = row.headerContent?.match(/@@ .+? @@\s*(.*)/);
+            const funcName = funcMatch?.[1];
+            const expandedContent = row.hunkIndex !== undefined ? expandedLines.get(row.hunkIndex) : undefined;
+            const hunkIdx = row.hunkIndex;
+
+            // Compute expandStartLine for expanded context
+            let expandStartLine = 1;
+            if (expandedContent && hunkIdx !== undefined) {
+              const currentHunk = hunkInfos.find(h => h.index === hunkIdx);
+              if (currentHunk) {
+                const prevHunk = hunkInfos.filter(h => h.index < hunkIdx).pop();
+                expandStartLine = prevHunk ? prevHunk.endNewLine + 1 : 1;
+              }
+            }
+
+            return (
+              <React.Fragment key={`h-${i}`}>
+                {expandedContent && expandedContent.length > 0 && expandedContent.map((text, ei) => (
+                  <tr key={`exp-${i}-${ei}`} className="diff-expanded-context">
+                    <td colSpan={6} className={cn(
+                      "py-0 font-mono text-[12.5px] leading-[20px]",
+                      wordWrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"
+                    )}>
+                      <div className="flex">
+                        <span className="inline-block w-10 text-right pr-2 shrink-0 text-[11px] text-muted-foreground/25 select-none">
+                          {expandStartLine + ei}
+                        </span>
+                        <span className="pl-1 text-muted-foreground/60">{text}</span>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                <tr className="diff-hunk-header">
+                  <td colSpan={6} className="py-1.5 px-3 text-[11px] font-mono bg-info/[0.04] dark:bg-info/[0.06]">
+                    <div className="flex items-center gap-2">
+                      {hunkIdx !== undefined && !expandedContent && (
+                        <button
+                          onClick={() => onExpandHunk(hunkIdx)}
+                          disabled={isLoadingExpand === hunkIdx}
+                          className="flex items-center justify-center cursor-pointer text-info/40 hover:text-info/70 transition-colors disabled:opacity-40"
+                          title="Expand context"
+                        >
+                          {isLoadingExpand === hunkIdx ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <UnfoldVertical className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      )}
+                      <span className="text-info/60 dark:text-info/50">
+                        {row.headerContent?.match(/@@ .+? @@/)?.[0]}
+                      </span>
+                      {funcName && (
+                        <span className="text-muted-foreground/50">{funcName}</span>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              </React.Fragment>
+            );
+          }
+
+          // Pair row
+          const leftTokens = getSyntaxTokens(row.left);
+          const rightTokens = getSyntaxTokens(row.right);
+          const leftSelected = isLineSelected(row.left, "LEFT");
+          const rightSelected = isLineSelected(row.right, "RIGHT");
+          const leftLineNum = row.left ? getLineNum(row.left) : undefined;
+          const rightLineNum = row.right ? getLineNum(row.right) : undefined;
+
+          // For context lines shown on both sides, LEFT side uses the context line's line number for display
+          const leftSide: "LEFT" | "RIGHT" = row.left?.type === "remove" ? "LEFT" : row.left?.type === "context" ? "LEFT" : "RIGHT";
+          const rightSide: "LEFT" | "RIGHT" = "RIGHT";
+
+          // Check for inline comments on each side
+          const leftComments = row.left ? getInlineComments(row.left, leftSide) : [];
+          const rightComments = row.right ? getInlineComments(row.right, rightSide) : [];
+
+          const leftIsCommentForm = row.left ? isCommentFormLine(row.left, leftSide) : false;
+          const rightIsCommentForm = row.right ? isCommentFormLine(row.right, rightSide) : false;
+
+          return (
+            <React.Fragment key={`p-${i}`}>
+              <tr
+                data-line={rightLineNum ?? leftLineNum}
+                className={cn("group/splitline hover:brightness-95 dark:hover:brightness-110 transition-[filter] duration-75")}
+                onMouseEnter={() => {
+                  if (leftLineNum !== undefined) onLineHover(leftLineNum);
+                  if (rightLineNum !== undefined) onLineHover(rightLineNum);
+                }}
+              >
+                {renderHalf(row.left, leftSide, leftTokens, leftSelected, true)}
+                {renderHalf(row.right, rightSide, rightTokens, rightSelected, false)}
+              </tr>
+
+              {/* Inline review comments - left side */}
+              {leftComments.map((comment) => (
+                <tr key={`lrc-${comment.id}`}>
+                  <td colSpan={6} className="p-0">
+                    <InlineCommentDisplay
+                      comment={comment}
+                      owner={owner}
+                      repo={repo}
+                      pullNumber={pullNumber}
+                      headBranch={headBranch}
+                      filename={filename}
+                      canWrite={canWrite}
+                    />
+                  </td>
+                </tr>
+              ))}
+
+              {/* Inline review comments - right side */}
+              {rightComments.map((comment) => (
+                <tr key={`rrc-${comment.id}`}>
+                  <td colSpan={6} className="p-0">
+                    <InlineCommentDisplay
+                      comment={comment}
+                      owner={owner}
+                      repo={repo}
+                      pullNumber={pullNumber}
+                      headBranch={headBranch}
+                      filename={filename}
+                      canWrite={canWrite}
+                    />
+                  </td>
+                </tr>
+              ))}
+
+              {/* Comment form */}
+              {(leftIsCommentForm || rightIsCommentForm) && commentRange && (
+                <tr>
+                  <td colSpan={6} className="p-0">
+                    <InlineCommentForm
+                      owner={owner!}
+                      repo={repo!}
+                      pullNumber={pullNumber!}
+                      headSha={headSha!}
+                      headBranch={headBranch}
+                      filename={filename}
+                      line={commentRange.endLine}
+                      side={commentRange.side}
+                      startLine={commentStartLine}
+                      selectedLinesContent={selectedLinesContent}
+                      selectedCodeForAI={selectedCodeForAI}
+                      onClose={onCloseComment}
+                      onAddContext={onAddContext}
+                      participants={participants}
+                    />
+                  </td>
+                </tr>
+              )}
+            </React.Fragment>
+          );
+        })}
+        </tbody>
+      </table>
+
+      {/* Resize handle overlay */}
+      <div
+        className="absolute top-0 bottom-0 z-10"
+        style={{
+          left: `${splitRatio}%`,
+          transform: "translateX(-50%)",
+        }}
+      >
+        <ResizeHandle
+          onResize={handleSplitResize}
+          onDragStart={() => setIsDraggingSplit(true)}
+          onDragEnd={() => setIsDraggingSplit(false)}
+          onDoubleClick={() => setSplitRatio(50)}
+        />
+      </div>
+    </div>
+  );
+}
+
 function SegmentedContent({
   segments,
   type,
@@ -1917,7 +3083,7 @@ function SyntaxSegmentedContent({
               type === "remove" &&
               "bg-diff-word-del rounded-[2px] px-[1px] -mx-[1px]"
           )}
-          style={{ "--shiki-light": r.lightColor, "--shiki-dark": r.darkColor } as React.CSSProperties}
+          style={{ color: `light-dark(${r.lightColor}, ${r.darkColor})` }}
         >
           {r.text}
         </span>
@@ -2088,7 +3254,7 @@ function FullFileView({
                         ) : (
                           <span className="diff-syntax">
                             {row.tokens.map((t, ti) => (
-                              <span key={ti} style={{ "--shiki-light": t.lightColor, "--shiki-dark": t.darkColor } as React.CSSProperties}>
+                              <span key={ti} style={{ color: `light-dark(${t.lightColor}, ${t.darkColor})` }}>
                                 {t.text}
                               </span>
                             ))}
@@ -2138,7 +3304,7 @@ function FullFileView({
                       ) : (
                         <span className="diff-syntax">
                           {row.tokens.map((t, ti) => (
-                            <span key={ti} style={{ "--shiki-light": t.lightColor, "--shiki-dark": t.darkColor } as React.CSSProperties}>
+                            <span key={ti} style={{ color: `light-dark(${t.lightColor}, ${t.darkColor})` }}>
                               {t.text}
                             </span>
                           ))}
@@ -2498,4 +3664,72 @@ function getFileIconColor(status: string) {
     default:
       return "text-muted-foreground/60";
   }
+}
+
+interface LineDiffEntry {
+  type: "context" | "add" | "remove";
+  content: string;
+  oldLineNumber?: number;
+  newLineNumber?: number;
+}
+
+function computeLineDiff(oldText: string, newText: string): LineDiffEntry[] {
+  const oldLines = oldText.split("\n");
+  const newLines = newText.split("\n");
+  const n = oldLines.length;
+  const m = newLines.length;
+
+  // LCS via DP
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      dp[i][j] = oldLines[i - 1] === newLines[j - 1]
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+
+  // Backtrack to get diff ops
+  const ops: LineDiffEntry[] = [];
+  let i = n, j = m;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+      ops.push({ type: "context", content: oldLines[i - 1], oldLineNumber: i, newLineNumber: j });
+      i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      ops.push({ type: "add", content: newLines[j - 1], newLineNumber: j });
+      j--;
+    } else {
+      ops.push({ type: "remove", content: oldLines[i - 1], oldLineNumber: i });
+      i--;
+    }
+  }
+  ops.reverse();
+
+  // Collapse into hunks with 3 lines of context
+  const CONTEXT = 3;
+  const changeIndices: number[] = [];
+  for (let k = 0; k < ops.length; k++) {
+    if (ops[k].type !== "context") changeIndices.push(k);
+  }
+  if (changeIndices.length === 0) return [];
+
+  const includeSet = new Set<number>();
+  for (const ci of changeIndices) {
+    for (let k = Math.max(0, ci - CONTEXT); k <= Math.min(ops.length - 1, ci + CONTEXT); k++) {
+      includeSet.add(k);
+    }
+  }
+
+  const result: LineDiffEntry[] = [];
+  const sortedIndices = Array.from(includeSet).sort((a, b) => a - b);
+  for (let k = 0; k < sortedIndices.length; k++) {
+    if (k > 0 && sortedIndices[k] - sortedIndices[k - 1] > 1) {
+      // Gap separator
+      result.push({ type: "context", content: "···" });
+    }
+    result.push(ops[sortedIndices[k]]);
+  }
+
+  return result;
 }

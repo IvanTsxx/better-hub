@@ -16,6 +16,7 @@ import { TimeAgo } from "@/components/ui/time-ago";
 import { CopyLinkButton } from "@/components/shared/copy-link-button";
 import { RefreshButton } from "@/components/shared/refresh-button";
 import { EditablePRTitle } from "@/components/pr/editable-pr-title";
+import { EditableBaseBranch } from "@/components/pr/editable-base-branch";
 
 interface PRHeaderProps {
   title: string;
@@ -146,7 +147,14 @@ export function PRHeader({
           <GitBranch className="w-3 h-3" />
           <span>{headBranch}</span>
           <ArrowRight className="w-2.5 h-2.5 text-muted-foreground/40" />
-          <span className="text-foreground/70">{baseBranch}</span>
+          <EditableBaseBranch
+            owner={owner}
+            repo={repo}
+            pullNumber={number}
+            baseBranch={baseBranch}
+            headBranch={headBranch}
+            canEdit={canEdit || false}
+          />
         </span>
 
         {/* Separator */}
@@ -178,7 +186,7 @@ export function PRHeader({
           .map((label) => (
             <span
               key={label.name}
-              className="text-[9px] font-mono px-1.5 py-0.5 border rounded-sm"
+              className="text-[9px] font-mono px-1.5 py-0.5 border rounded-full"
               style={{
                 borderColor: `#${label.color || "888"}30`,
                 color: `#${label.color || "888"}`,

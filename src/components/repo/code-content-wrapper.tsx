@@ -36,13 +36,17 @@ export function CodeContentWrapper({
   const base = `/${owner}/${repo}`;
 
   const isCodeRoute =
-    pathname === base ||
+    pathname === `${base}/code` ||
     pathname.startsWith(`${base}/tree`) ||
     pathname.startsWith(`${base}/blob`);
 
   // Detail routes (e.g. /pulls/123, /issues/5, /people/username) manage their own scrolling
+  // Note: /pull/ (singular) comes from GitHub-style URLs rewritten by next.config.ts
   const isDetailRoute =
-    /\/pulls\/\d+/.test(pathname) || /\/issues\/\d+/.test(pathname) || /\/people\/[^/]+$/.test(pathname);
+    /\/pulls?\/\d+/.test(pathname) || /\/issues\/\d+/.test(pathname) || /\/people\/[^/]+$/.test(pathname);
+
+  // Overview route: page frame stays fixed, only content sections scroll (lg only)
+  const isOverviewRoute = pathname === base;
 
   const showTree = isCodeRoute && tree !== null;
 
@@ -169,7 +173,7 @@ export function CodeContentWrapper({
       )}
       <div className="flex-1 min-w-0 flex flex-col min-h-0">
         {isBlobOrTree && (
-          <div className="shrink-0 px-4 pt-3 pb-0 flex items-center gap-3">
+          <div className="shrink-0 pl-4 pt-3 pb-3 flex items-center gap-3" style={{ paddingRight: 'var(--repo-pr, 1rem)' }}>
             <BranchSelector
               owner={owner}
               repo={repo}
@@ -192,9 +196,12 @@ export function CodeContentWrapper({
           className={cn(
             "flex-1 min-h-0",
             isDetailRoute
-              ? "flex flex-col overflow-hidden px-4"
-              : cn("overflow-y-auto px-4 pb-4", isBlobOrTree ? "" : "pt-3")
+              ? "flex flex-col overflow-hidden pl-4"
+              : isOverviewRoute
+                ? "flex flex-col overflow-y-auto pl-4 pb-4 pt-3"
+                : cn("overflow-y-auto pl-4 pb-4", isBlobOrTree ? "" : "pt-3")
           )}
+          style={{ paddingRight: 'var(--repo-pr, 1rem)' }}
         >
           {children}
         </div>

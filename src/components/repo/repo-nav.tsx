@@ -24,22 +24,27 @@ export function RepoNav({ owner, repo, openIssuesCount, openPrsCount, activeRuns
 
   const tabs = [
     {
-      label: "Code",
+      label: "Overview",
       href: base,
+      active: pathname === base,
+    },
+    {
+      label: "Code",
+      href: `${base}/code`,
       active:
-        pathname === base ||
+        pathname === `${base}/code` ||
         pathname.startsWith(`${base}/tree`) ||
         pathname.startsWith(`${base}/blob`),
     },
     {
       label: "Commits",
       href: `${base}/commits`,
-      active: pathname.startsWith(`${base}/commits`),
+      active: pathname.startsWith(`${base}/commits`) || pathname.startsWith(`${base}/commit/`),
     },
     {
       label: "PRs",
       href: `${base}/pulls`,
-      active: pathname.startsWith(`${base}/pulls`),
+      active: pathname.startsWith(`${base}/pulls`) || pathname.startsWith(`${base}/pull/`),
       count: openPrsCount,
     },
     {
@@ -73,6 +78,11 @@ export function RepoNav({ owner, repo, openIssuesCount, openPrsCount, activeRuns
       label: "Security",
       href: `${base}/security`,
       active: pathname.startsWith(`${base}/security`),
+    },
+    {
+      label: "Activity",
+      href: `${base}/activity`,
+      active: pathname.startsWith(`${base}/activity`),
     },
     {
       label: "Insights",

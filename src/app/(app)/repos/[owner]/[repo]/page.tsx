@@ -1,10 +1,20 @@
-import { getRepo, getRepoContents, getRepoBranches, getRepoTags, getRepoReadme, getRepoPullRequests } from "@/lib/github";
-import { BranchSelector } from "@/components/repo/branch-selector";
-import { FileList } from "@/components/repo/file-list";
-import { CodeToolbar } from "@/components/repo/code-toolbar";
+import {
+  getRepo,
+  getRepoIssues,
+  getRepoPullRequests,
+  getRepoNavCounts,
+  getCommitActivity,
+  getAuthenticatedUser,
+  getUserEvents,
+  getRepoEvents,
+  getRepoReadme,
+  getRepoContributors,
+  getLanguages,
+  extractRepoPermissions,
+} from "@/lib/github";
 import { MarkdownRenderer } from "@/components/shared/markdown-renderer";
 import { TrackView } from "@/components/shared/track-view";
-import { deleteBranch } from "./actions";
+import { RepoOverview } from "@/components/repo/repo-overview";
 
 export default async function RepoPage({
   params,
@@ -13,64 +23,76 @@ export default async function RepoPage({
 }) {
   const { owner, repo } = await params;
 
-  const repoDataPromise = getRepo(owner, repo);
-  const branchesPromise = getRepoBranches(owner, repo);
-  const tagsPromise = getRepoTags(owner, repo);
-
-  const repoData = await repoDataPromise;
+  const repoData = await getRepo(owner, repo);
   if (!repoData) return null;
 
-  const defaultBranch = repoData.default_branch;
+  const permissions = extractRepoPermissions(repoData);
+  const isMaintainer = permissions.push || permissions.admin || permissions.maintain;
 
-  const [branches, tags, contents, openPRs, closedPRs] = await Promise.all([
-    branchesPromise,
-    tagsPromise,
-    getRepoContents(owner, repo, "", defaultBranch),
+  // Shared data
+  const [openPRs, allIssues, navCounts] = await Promise.all([
     getRepoPullRequests(owner, repo, "open"),
-    getRepoPullRequests(owner, repo, "closed"),
+    getRepoIssues(owner, repo, "open"),
+    getRepoNavCounts(owner, repo, repoData.open_issues_count ?? 0),
   ]);
 
-  const hasReadme = Array.isArray(contents) && contents.some(
-    (item: any) => typeof item.name === "string" && item.name.toLowerCase().startsWith("readme")
-  );
-  const readme = hasReadme ? await getRepoReadme(owner, repo, defaultBranch) : null;
+  // Filter out PRs from issues list (GitHub API returns PRs in issues endpoint)
+  const openIssues = allIssues.filter((item: any) => !item.pull_request);
 
-  // Map branches to their most recent PR (open > merged > closed)
-  const branchPRMap = new Map<string, { number: number; state: "open" | "merged" | "closed"; user: { login: string; avatarUrl: string } }>();
-  for (const pr of openPRs) {
-    const ref = pr.head.ref;
-    if (!branchPRMap.has(ref)) {
-      branchPRMap.set(ref, {
-        number: pr.number,
-        state: "open",
-        user: { login: pr.user?.login ?? "", avatarUrl: pr.user?.avatar_url ?? "" },
-      });
-    }
+  if (isMaintainer) {
+    // Maintainer: fetch commit activity + repo events + user events
+    const currentUser = await getAuthenticatedUser();
+    const [commitActivity, repoEvents, userEvents] = await Promise.all([
+      getCommitActivity(owner, repo),
+      getRepoEvents(owner, repo, 30),
+      currentUser ? getUserEvents(currentUser.login, 100) : Promise.resolve([]),
+    ]);
+
+    // Filter user events to this repo
+    const repoFullName = `${owner}/${repo}`;
+    const myRepoEvents = (userEvents as any[]).filter(
+      (e: any) => e.repo?.name === repoFullName
+    );
+
+    return (
+      <div className="flex flex-col flex-1 min-h-0">
+        <TrackView
+          type="repo"
+          url={`/${owner}/${repo}`}
+          title={`${owner}/${repo}`}
+          subtitle={repoData.description || "No description"}
+          image={(repoData as any).owner?.avatar_url}
+        />
+        <RepoOverview
+          owner={owner}
+          repo={repo}
+          repoData={repoData}
+          isMaintainer={true}
+          openPRs={openPRs as any}
+          openIssues={openIssues as any}
+          openPRCount={navCounts.openPrs}
+          openIssueCount={navCounts.openIssues}
+          commitActivity={commitActivity}
+          repoEvents={repoEvents as any}
+          myRepoEvents={myRepoEvents}
+        />
+      </div>
+    );
   }
-  for (const pr of closedPRs) {
-    const ref = pr.head.ref;
-    if (!branchPRMap.has(ref)) {
-      branchPRMap.set(ref, {
-        number: pr.number,
-        state: (pr as any).merged_at ? "merged" : "closed",
-        user: { login: pr.user?.login ?? "", avatarUrl: pr.user?.avatar_url ?? "" },
-      });
-    }
-  }
 
-  const enrichedBranches = branches.map((b) => ({
-    name: b.name,
-    pr: branchPRMap.get(b.name),
-  }));
+  // Non-maintainer: fetch readme, contributors, languages
+  const [readmeData, contributorsData, languages] = await Promise.all([
+    getRepoReadme(owner, repo, repoData.default_branch),
+    getRepoContributors(owner, repo, 10),
+    getLanguages(owner, repo),
+  ]);
 
-  const items = Array.isArray(contents)
-    ? contents.map((item: any) => ({
-        name: item.name,
-        path: item.path,
-        type: item.type === "dir" ? ("dir" as const) : ("file" as const),
-        size: item.size,
-      }))
-    : [];
+  const readmeSlot = readmeData ? (
+    <MarkdownRenderer
+      content={readmeData.content}
+      repoContext={{ owner, repo, branch: repoData.default_branch }}
+    />
+  ) : null;
 
   return (
     <div>
@@ -81,46 +103,19 @@ export default async function RepoPage({
         subtitle={repoData.description || "No description"}
         image={(repoData as any).owner?.avatar_url}
       />
-      <div className="flex items-center gap-3 mb-3">
-        <BranchSelector
-          owner={owner}
-          repo={repo}
-          currentRef={defaultBranch}
-          branches={branches}
-          tags={tags}
-          defaultBranch={defaultBranch}
-        />
-        <div className="flex-1">
-          <CodeToolbar
-            owner={owner}
-            repo={repo}
-            currentRef={defaultBranch}
-            branches={enrichedBranches}
-            defaultBranch={defaultBranch}
-            onDeleteBranch={deleteBranch as any}
-          />
-        </div>
-      </div>
-
-      <FileList
-        items={items}
+      <RepoOverview
         owner={owner}
         repo={repo}
-        currentRef={defaultBranch}
+        repoData={repoData}
+        isMaintainer={false}
+        openPRs={openPRs as any}
+        openIssues={openIssues as any}
+        openPRCount={navCounts.openPrs}
+        openIssueCount={navCounts.openIssues}
+        readmeSlot={readmeSlot}
+        contributors={contributorsData.list}
+        languages={languages}
       />
-
-      {readme && (
-        <div className="mt-6 border border-border rounded-md overflow-hidden">
-          <div className="px-4 py-2 border-b border-border bg-muted/30">
-            <span className="text-[11px] font-mono text-muted-foreground">
-              README.md
-            </span>
-          </div>
-          <div className="px-6 py-5">
-            <MarkdownRenderer content={readme.content} repoContext={{ owner, repo, branch: defaultBranch }} />
-          </div>
-        </div>
-      )}
     </div>
   );
 }

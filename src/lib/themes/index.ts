@@ -34,10 +34,25 @@ export function applyTheme(themeId: string): void {
     for (const key of allKeys) {
       el.style.removeProperty(key);
     }
+    // Still sync the dark/light class for midnight
+    el.classList.add("dark");
+    el.classList.remove("light");
+    el.style.colorScheme = "dark";
     return;
   }
 
   for (const key of allKeys) {
     el.style.setProperty(key, theme.colors[key]);
+  }
+
+  // Sync the dark/light class immediately alongside CSS vars
+  if (theme.mode === "dark") {
+    el.classList.add("dark");
+    el.classList.remove("light");
+    el.style.colorScheme = "dark";
+  } else {
+    el.classList.remove("dark");
+    el.classList.add("light");
+    el.style.colorScheme = "light";
   }
 }

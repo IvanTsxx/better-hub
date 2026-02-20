@@ -54,13 +54,53 @@ interface GlobalChatContextValue {
   clearContext: () => void;
   closeChat: () => void;
   toggleChat: () => void;
+  /** @deprecated Use setWorkingSource instead */
   setIsWorking: (working: boolean) => void;
+  /** Register a named working source. isWorking is true when any source is active. */
+  setWorkingSource: (key: string, active: boolean) => void;
   addCodeContext: (context: InlineContext) => void;
   registerContextHandler: (fn: AddCodeContextFn) => void;
-  addTab: (label?: string) => void;
+  addTab: (label?: string, customTabId?: string) => void;
   closeTab: (tabId: string) => void;
   switchTab: (tabId: string) => void;
   renameTab: (tabId: string, label: string) => void;
+  replaceCurrentTab: (newId: string, label: string) => void;
+}
+
+// ── Pathname helpers for context-change detection ────────────────────────────
+
+const KNOWN_APP_PREFIXES = new Set([
+  "repos", "prs", "issues", "notifications", "settings", "search",
+  "trending", "users", "orgs", "dashboard", "api", "collections",
+]);
+
+/** Extract a repo context identifier (e.g. "vercel/next.js") from a pathname, or a page category */
+function getPageContext(pathname: string): string {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length >= 2 && !KNOWN_APP_PREFIXES.has(segments[0])) {
+    return `${segments[0]}/${segments[1]}`;
+  }
+  return segments[0] || "home";
+}
+
+/** Derive a short context-aware label for a Ghost tab from the current pathname */
+function getTabLabelForPathname(pathname: string): string {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length >= 2 && !KNOWN_APP_PREFIXES.has(segments[0])) {
+    const repo = segments[1];
+    const prMatch = pathname.match(/\/pulls\/(\d+)/);
+    if (prMatch) return `PR #${prMatch[1]} · ${repo}`;
+    const issueMatch = pathname.match(/\/issues\/(\d+)/);
+    if (issueMatch) return `Issue #${issueMatch[1]} · ${repo}`;
+    if (/\/pulls\/?$/.test(pathname)) return `PRs · ${repo}`;
+    if (/\/issues\/?$/.test(pathname)) return `Issues · ${repo}`;
+    return repo;
+  }
+  if (pathname.startsWith("/prs")) return "My PRs";
+  if (pathname.startsWith("/issues")) return "My Issues";
+  if (pathname.startsWith("/notifications")) return "Notifs";
+  if (pathname.startsWith("/repos")) return "Repos";
+  return "New chat";
 }
 
 const GlobalChatContext = createContext<GlobalChatContextValue | null>(null);
@@ -101,18 +141,20 @@ export function GlobalChatProvider({ children, initialTabState }: GlobalChatProv
   const contextHandlerRef = useRef<AddCodeContextFn | null>(null);
   // Track open state for synchronous keyboard shortcut checks
   const isOpenRef = useRef(false);
-  // Track the contextKey when the panel was last closed, so we can detect context changes on reopen
-  const lastClosedContextKeyRef = useRef<string | null>(null);
+  // Track the pathname when the panel was last closed, so we can detect repo/page changes on reopen
+  const lastClosedPathnameRef = useRef<string | null>(null);
+  // Multiple sources can contribute to "isWorking" (e.g. chat streaming, prompt processing)
+  const workingSourcesRef = useRef<Set<string>>(new Set());
 
   // ── Tab mutations (optimistic + fire-and-forget POST) ──────────────
 
-  const addTab = useCallback((contextLabel?: string) => {
-    const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const addTab = useCallback((contextLabel?: string, customTabId?: string) => {
+    const id = customTabId || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     let label = "";
     let counter = 0;
     setTabState((prev) => {
       counter = prev.counter + 1;
-      label = contextLabel || `Thread ${counter}`;
+      label = contextLabel || state.emptyTitle || state.contextKey || "New chat";
       return {
         tabs: [...prev.tabs, { id, label }],
         activeTabId: id,
@@ -128,7 +170,7 @@ export function GlobalChatProvider({ children, initialTabState }: GlobalChatProv
         body: JSON.stringify({ action: "add", tabId: id, label, counter }),
       }).catch(() => {});
     }, 0);
-  }, []);
+  }, [state.emptyTitle, state.contextKey]);
 
   const closeTab = useCallback((tabId: string) => {
     let newDefault: { id: string; label: string; counter: number } | undefined;
@@ -137,8 +179,9 @@ export function GlobalChatProvider({ children, initialTabState }: GlobalChatProv
       const remaining = prev.tabs.filter((t) => t.id !== tabId);
       if (remaining.length === 0) {
         const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-        newDefault = { id, label: "Thread 1", counter: 1 };
-        return { tabs: [{ id, label: "Thread 1" }], activeTabId: id, counter: 1 };
+        const fallback = "New chat";
+        newDefault = { id, label: fallback, counter: 1 };
+        return { tabs: [{ id, label: fallback }], activeTabId: id, counter: 1 };
       }
       let newActiveId = prev.activeTabId;
       if (prev.activeTabId === tabId) {
@@ -177,6 +220,17 @@ export function GlobalChatProvider({ children, initialTabState }: GlobalChatProv
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "rename", tabId, label }),
     }).catch(() => {});
+  }, []);
+
+  /** Replace the active tab's ID and label (used to load a history conversation) */
+  const replaceCurrentTab = useCallback((newId: string, label: string) => {
+    setTabState((prev) => ({
+      ...prev,
+      tabs: prev.tabs.map((t) =>
+        t.id === prev.activeTabId ? { id: newId, label } : t
+      ),
+      activeTabId: newId,
+    }));
   }, []);
 
   // ── Existing chat state logic ──────────────────────────────────────
@@ -224,10 +278,8 @@ export function GlobalChatProvider({ children, initialTabState }: GlobalChatProv
   }, [setContext, focusGhostInput]);
 
   const closeChat = useCallback(() => {
-    setState((prev) => {
-      lastClosedContextKeyRef.current = prev.contextKey;
-      return { ...prev, isOpen: false };
-    });
+    lastClosedPathnameRef.current = window.location.pathname;
+    setState((prev) => ({ ...prev, isOpen: false }));
     isOpenRef.current = false;
   }, []);
 
@@ -236,25 +288,41 @@ export function GlobalChatProvider({ children, initialTabState }: GlobalChatProv
       const opening = !prev.isOpen;
       isOpenRef.current = opening;
       if (opening) {
-        // Opening: if context changed since last close, open a new tab
-        if (
-          lastClosedContextKeyRef.current !== null &&
-          prev.contextKey !== null &&
-          prev.contextKey !== lastClosedContextKeyRef.current
-        ) {
-          addTab();
+        const currentPathname = window.location.pathname;
+        // If the page context (repo) changed since last close, open a new tab
+        if (lastClosedPathnameRef.current !== null) {
+          const lastCtx = getPageContext(lastClosedPathnameRef.current);
+          const currentCtx = getPageContext(currentPathname);
+          if (lastCtx !== currentCtx) {
+            addTab(getTabLabelForPathname(currentPathname));
+          }
         }
         focusGhostInput();
       } else {
-        lastClosedContextKeyRef.current = prev.contextKey;
+        lastClosedPathnameRef.current = window.location.pathname;
       }
       return { ...prev, isOpen: opening };
     });
   }, [focusGhostInput, addTab]);
 
-  const setIsWorking = useCallback((working: boolean) => {
+  const syncIsWorking = useCallback(() => {
+    const working = workingSourcesRef.current.size > 0;
     setState((prev) => (prev.isWorking === working ? prev : { ...prev, isWorking: working }));
   }, []);
+
+  const setWorkingSource = useCallback((key: string, active: boolean) => {
+    if (active) {
+      workingSourcesRef.current.add(key);
+    } else {
+      workingSourcesRef.current.delete(key);
+    }
+    syncIsWorking();
+  }, [syncIsWorking]);
+
+  // Backward compat — maps to the "chat" source key
+  const setIsWorking = useCallback((working: boolean) => {
+    setWorkingSource("chat", working);
+  }, [setWorkingSource]);
 
   const addCodeContext = useCallback((context: InlineContext) => {
     setState((prev) => ({ ...prev, isOpen: true }));
@@ -295,12 +363,14 @@ export function GlobalChatProvider({ children, initialTabState }: GlobalChatProv
         closeChat,
         toggleChat,
         setIsWorking,
+        setWorkingSource,
         addCodeContext,
         registerContextHandler,
         addTab,
         closeTab,
         switchTab,
         renameTab,
+        replaceCurrentTab,
       }}
     >
       {children}

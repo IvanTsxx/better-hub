@@ -11,7 +11,8 @@ interface AIModelTabProps {
 }
 
 const MODELS = [
-  { id: "moonshotai/kimi-k2.5", label: "Kimi K2.5", desc: "Moonshot AI — Default" },
+  { id: "auto", label: "Auto", desc: "Best model for the task — Default" },
+  { id: "moonshotai/kimi-k2.5", label: "Kimi K2.5", desc: "Moonshot AI" },
   { id: "anthropic/claude-sonnet-4", label: "Claude Sonnet 4", desc: "Anthropic" },
   { id: "anthropic/claude-opus-4", label: "Claude Opus 4", desc: "Anthropic" },
   { id: "openai/gpt-4.1", label: "GPT-4.1", desc: "OpenAI" },

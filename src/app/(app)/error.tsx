@@ -40,17 +40,33 @@ function formatTime(seconds: number) {
 }
 
 function RateLimitUI({ reset }: { reset: () => void }) {
-  // Estimate reset ~60 minutes from now if we don't have exact time
-  const [resetAt] = useState(() => Math.floor(Date.now() / 1000) + 3600);
+  const [resetAt, setResetAt] = useState(() => Math.floor(Date.now() / 1000) + 3600);
+  const [totalWait, setTotalWait] = useState(3600);
+  const [rateLimitInfo, setRateLimitInfo] = useState<{ limit: number; used: number } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/rate-limit")
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        if (data?.resetAt) {
+          const now = Math.floor(Date.now() / 1000);
+          setResetAt(data.resetAt);
+          setTotalWait(Math.max(1, data.resetAt - now));
+          setRateLimitInfo({ limit: data.limit, used: data.used });
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   const remaining = useCountdown(resetAt);
-  const progress = Math.max(0, Math.min(100, ((3600 - remaining) / 3600) * 100));
+  const progress = Math.max(0, Math.min(100, ((totalWait - remaining) / totalWait) * 100));
 
   // Animated bar segments
   const totalSegments = 30;
   const filledSegments = Math.round((progress / 100) * totalSegments);
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] px-4">
+    <div className="flex flex-col items-center justify-center flex-1 px-4">
       <div className="w-full max-w-md space-y-8">
         {/* Icon */}
         <div className="flex justify-center">
@@ -111,7 +127,7 @@ function RateLimitUI({ reset }: { reset: () => void }) {
           <div className="flex items-center gap-2">
             <Github className="w-3.5 h-3.5 text-muted-foreground/40" />
             <span className="text-[11px] font-mono text-muted-foreground/60">
-              GitHub API &middot; 5,000 requests/hour
+              GitHub API &middot; {rateLimitInfo ? `${rateLimitInfo.used.toLocaleString()} / ${rateLimitInfo.limit.toLocaleString()} used` : "5,000 requests/hour"}
             </span>
           </div>
           <p className="text-xs text-muted-foreground/40 leading-relaxed">
@@ -143,7 +159,7 @@ function GenericErrorUI({
   reset: () => void;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] px-4">
+    <div className="flex flex-col items-center justify-center flex-1 px-4">
       <div className="w-full max-w-md space-y-6 text-center">
         <div className="w-12 h-12 rounded-xl bg-red-500/10 flex items-center justify-center mx-auto">
           <Zap className="w-6 h-6 text-red-400" />

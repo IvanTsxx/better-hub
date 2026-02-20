@@ -40,19 +40,27 @@ export function ColorThemeProvider({ children }: { children: React.ReactNode }) 
     return localStorage.getItem(STORAGE_KEY) ?? DEFAULT_THEME_ID;
   });
   const syncedFromDb = useRef(false);
+  const appliedRef = useRef<string | null>(null);
 
   const themes = listThemes();
   const currentTheme = getTheme(colorTheme);
   const mode = currentTheme?.mode ?? "dark";
 
-  // Apply CSS vars and sync next-themes mode whenever colorTheme changes
+  // Apply CSS vars + dark/light class whenever colorTheme changes
   useEffect(() => {
+    // Skip if FOUC script already applied this theme on first render
+    if (appliedRef.current === colorTheme) return;
+    appliedRef.current = colorTheme;
     applyTheme(colorTheme);
+    // Also tell next-themes so its context stays in sync
     const theme = getTheme(colorTheme);
-    if (theme) {
-      setTheme(theme.mode);
-    }
+    if (theme) setTheme(theme.mode);
   }, [colorTheme, setTheme]);
+
+  // Mark the initial theme as already applied (FOUC script handled it)
+  useEffect(() => {
+    appliedRef.current = colorTheme;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // On mount: fetch theme from DB — if it differs from localStorage, adopt it
   useEffect(() => {
@@ -68,6 +76,7 @@ export function ColorThemeProvider({ children }: { children: React.ReactNode }) 
         if (dbTheme !== local && getTheme(dbTheme)) {
           localStorage.setItem(STORAGE_KEY, dbTheme);
           setColorThemeState(dbTheme);
+          appliedRef.current = null; // force re-apply
         }
       })
       .catch(() => {});
@@ -76,6 +85,7 @@ export function ColorThemeProvider({ children }: { children: React.ReactNode }) 
   const setColorTheme = useCallback((id: string) => {
     const apply = () => {
       localStorage.setItem(STORAGE_KEY, id);
+      appliedRef.current = null; // force the effect to re-apply
       setColorThemeState(id);
     };
 

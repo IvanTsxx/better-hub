@@ -120,7 +120,7 @@ function ReactionsContextMenu({
   return createPortal(
     <div
       ref={menuRef}
-      className="fixed z-[9999] w-56 max-h-72 overflow-y-auto rounded-lg border border-border bg-popover shadow-xl"
+      className="fixed z-[9999] w-56 max-h-72 overflow-y-auto rounded-lg border border-border bg-card shadow-xl"
       style={style}
     >
       <div className="px-3 py-2 border-b border-border">
@@ -291,7 +291,7 @@ export function ReactionDisplay({
               {/* Portal tooltip */}
               {isHovered && (
                 <Tooltip anchorRef={hoveredRef}>
-                  <div className="bg-popover text-popover-foreground text-[10px] font-mono px-2 py-1 rounded shadow-lg whitespace-nowrap max-w-[220px]">
+                  <div className="bg-card text-foreground text-[10px] font-mono px-2 py-1 rounded shadow-lg border border-border whitespace-nowrap max-w-[220px]">
                     {users.length > 0 ? (
                       <span className="truncate block">
                         {users.slice(0, 10).map((u) => u.login).join(", ")}

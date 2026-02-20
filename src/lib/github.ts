@@ -9,6 +9,7 @@ import {
   getGithubCacheEntry,
   markGithubSyncJobFailed,
   markGithubSyncJobSucceeded,
+  touchGithubCacheEntrySyncedAt,
   upsertGithubCacheEntry,
 } from "./github-sync-store";
 
@@ -77,7 +78,9 @@ type GitDataSyncJobType =
   | "repo_workflows"
   | "repo_workflow_runs"
   | "repo_nav_counts"
-  | "org_members";
+  | "org_members"
+  | "person_repo_activity"
+  | "pr_bundle";
 
 interface GitDataSyncJobPayload {
   owner?: string;
@@ -148,6 +151,8 @@ const CACHE_TTL_MS = {
   repoWorkflowRuns: 60_000,
   repoNavCounts: 60_000,
   orgMembers: 300_000,
+  personRepoActivity: 120_000,
+  prBundle: 60_000,
 };
 
 const globalForGithubSync = globalThis as typeof globalThis & {
@@ -381,6 +386,14 @@ function buildOrgMembersCacheKey(org: string, perPage: number): string {
   return `org_members:${org.toLowerCase()}:${perPage}`;
 }
 
+function buildPersonRepoActivityCacheKey(owner: string, repo: string, username: string): string {
+  return `person_repo_activity:${normalizeRepoKey(owner, repo)}:${username.toLowerCase()}`;
+}
+
+function buildPRBundleCacheKey(owner: string, repo: string, pullNumber: number): string {
+  return `pr_bundle:${normalizeRepoKey(owner, repo)}:${pullNumber}`;
+}
+
 const getGitHubAuthContext = cache(async (): Promise<GitHubAuthContext | null> => {
   const reqHeaders = await headers();
   const session = await auth.api.getSession({
@@ -394,8 +407,15 @@ const getGitHubAuthContext = cache(async (): Promise<GitHubAuthContext | null> =
     (account: { providerId: string }) => account.providerId === "github"
   );
 
-  const token = githubAccount?.accessToken;
-  if (!token) return null;
+  const oauthToken = githubAccount?.accessToken;
+  if (!oauthToken) return null;
+
+  const { getActiveGitHubAccount } = await import("./github-accounts-store");
+  const activeAccount = await getActiveGitHubAccount(session.user.id);
+
+  const { getUserSettings } = await import("./user-settings-store");
+  const settings = await getUserSettings(session.user.id);
+  const token = activeAccount?.pat || settings.githubPat || oauthToken;
 
   const cacheControl = reqHeaders.get("cache-control") ?? "";
   const pragma = reqHeaders.get("pragma") ?? "";
@@ -941,6 +961,28 @@ async function fetchRepoNavCountsFromGitHub(
   };
 }
 
+/** Conditional GET against the GitHub API — returns {notModified:true} on 304 without throwing. */
+async function ghConditionalGet(
+  token: string,
+  path: string,
+  etag: string | null
+): Promise<{ notModified: true; data?: undefined; etag?: undefined } | { notModified: false; data: any; etag: string | null }> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  if (etag) headers["If-None-Match"] = etag;
+  const resp = await fetch(`https://api.github.com${path}`, { headers, cache: "no-store" });
+  if (resp.status === 304) return { notModified: true };
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    throw new Error(`GitHub API ${resp.status}: ${path} – ${body.slice(0, 200)}`);
+  }
+  const data = await resp.json();
+  return { notModified: false, data, etag: resp.headers.get("etag") };
+}
+
 async function processGitDataSyncJob(
   authCtx: GitHubAuthContext,
   jobType: GitDataSyncJobType,
@@ -952,24 +994,33 @@ async function processGitDataSyncJob(
       const sort = payload.sort ?? "updated";
       const perPage = payload.perPage ?? 30;
       const data = await fetchUserReposFromGitHub(authCtx.octokit, sort, perPage);
-      upsertGithubCacheEntry(authCtx.userId, buildUserReposCacheKey(sort, perPage), "user_repos", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildUserReposCacheKey(sort, perPage), "user_repos", data);
       return;
     }
     case "authenticated_user": {
-      const data = await fetchAuthenticatedUserFromGitHub(authCtx.octokit);
-      upsertGithubCacheEntry(authCtx.userId, buildAuthenticatedUserCacheKey(), "authenticated_user", data);
+      const auKey = buildAuthenticatedUserCacheKey();
+      const auCached = await getGithubCacheEntry(authCtx.userId, auKey);
+      try {
+        const resp = await authCtx.octokit.users.getAuthenticated({
+          headers: auCached?.etag ? { "If-None-Match": auCached.etag } : {},
+        } as any);
+        await upsertGithubCacheEntry(authCtx.userId, auKey, "authenticated_user", resp.data, resp.headers?.etag ?? null);
+      } catch (e: any) {
+        if (e.status === 304) { await touchGithubCacheEntrySyncedAt(authCtx.userId, auKey); return; }
+        throw e;
+      }
       return;
     }
     case "user_orgs": {
       const perPage = payload.perPage ?? 50;
       const data = await fetchUserOrgsFromGitHub(authCtx.octokit, perPage);
-      upsertGithubCacheEntry(authCtx.userId, buildUserOrgsCacheKey(perPage), "user_orgs", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildUserOrgsCacheKey(perPage), "user_orgs", data);
       return;
     }
     case "org": {
       if (!payload.orgName) return;
       const data = await fetchOrgFromGitHub(authCtx.octokit, payload.orgName);
-      upsertGithubCacheEntry(authCtx.userId, buildOrgCacheKey(payload.orgName), "org", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildOrgCacheKey(payload.orgName), "org", data);
       return;
     }
     case "org_repos": {
@@ -978,72 +1029,82 @@ async function processGitDataSyncJob(
       const type = payload.orgType ?? "all";
       const perPage = payload.perPage ?? 100;
       const data = await fetchOrgReposFromGitHub(authCtx.octokit, payload.orgName, sort, type, perPage);
-      upsertGithubCacheEntry(authCtx.userId, buildOrgReposCacheKey(payload.orgName, sort, type, perPage), "org_repos", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildOrgReposCacheKey(payload.orgName, sort, type, perPage), "org_repos", data);
       return;
     }
     case "notifications": {
       const perPage = payload.perPage ?? 20;
       const data = await fetchNotificationsFromGitHub(authCtx.octokit, perPage);
-      upsertGithubCacheEntry(authCtx.userId, buildNotificationsCacheKey(perPage), "notifications", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildNotificationsCacheKey(perPage), "notifications", data);
       return;
     }
     case "search_issues": {
       if (!payload.query) return;
       const perPage = payload.perPage ?? 20;
       const data = await fetchSearchIssuesFromGitHub(authCtx.octokit, payload.query, perPage);
-      upsertGithubCacheEntry(authCtx.userId, buildSearchIssuesCacheKey(payload.query, perPage), "search_issues", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildSearchIssuesCacheKey(payload.query, perPage), "search_issues", data);
       return;
     }
     case "user_events": {
       if (!payload.username) return;
       const perPage = payload.perPage ?? 30;
       const data = await fetchUserEventsFromGitHub(authCtx.octokit, payload.username, perPage);
-      upsertGithubCacheEntry(authCtx.userId, buildUserEventsCacheKey(payload.username, perPage), "user_events", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildUserEventsCacheKey(payload.username, perPage), "user_events", data);
       return;
     }
     case "starred_repos": {
       const perPage = payload.perPage ?? 10;
       const data = await fetchStarredReposFromGitHub(authCtx.octokit, perPage);
-      upsertGithubCacheEntry(authCtx.userId, buildStarredReposCacheKey(perPage), "starred_repos", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildStarredReposCacheKey(perPage), "starred_repos", data);
       return;
     }
     case "contributions": {
       if (!payload.username) return;
       const data = await fetchContributionsFromGitHub(authCtx.token, payload.username);
-      upsertGithubCacheEntry(authCtx.userId, buildContributionsCacheKey(payload.username), "contributions", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildContributionsCacheKey(payload.username), "contributions", data);
       return;
     }
     case "trending_repos": {
       const since = payload.since ?? "weekly";
       const perPage = payload.perPage ?? 10;
       const data = await fetchTrendingReposFromGitHub(authCtx.octokit, since, perPage, payload.language);
-      upsertGithubCacheEntry(authCtx.userId, buildTrendingReposCacheKey(since, perPage, payload.language), "trending_repos", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildTrendingReposCacheKey(since, perPage, payload.language), "trending_repos", data);
       return;
     }
     case "org_members": {
       if (!payload.orgName) return;
       const perPage = payload.perPage ?? 100;
       const data = await fetchOrgMembersFromGitHub(authCtx.octokit, payload.orgName, perPage);
-      upsertGithubCacheEntry(authCtx.userId, buildOrgMembersCacheKey(payload.orgName, perPage), "org_members", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildOrgMembersCacheKey(payload.orgName, perPage), "org_members", data);
       return;
     }
     case "user_profile": {
       if (!payload.username) return;
-      const data = await fetchUserProfileFromGitHub(authCtx.octokit, payload.username);
-      upsertGithubCacheEntry(authCtx.userId, buildUserProfileCacheKey(payload.username), "user_profile", data);
+      const upKey = buildUserProfileCacheKey(payload.username);
+      const upCached = await getGithubCacheEntry(authCtx.userId, upKey);
+      try {
+        const resp = await authCtx.octokit.users.getByUsername({
+          username: payload.username,
+          headers: upCached?.etag ? { "If-None-Match": upCached.etag } : {},
+        } as any);
+        await upsertGithubCacheEntry(authCtx.userId, upKey, "user_profile", resp.data, resp.headers?.etag ?? null);
+      } catch (e: any) {
+        if (e.status === 304) { await touchGithubCacheEntrySyncedAt(authCtx.userId, upKey); return; }
+        throw e;
+      }
       return;
     }
     case "user_public_repos": {
       if (!payload.username) return;
       const perPage = payload.perPage ?? 30;
       const data = await fetchUserPublicReposFromGitHub(authCtx.octokit, payload.username, perPage);
-      upsertGithubCacheEntry(authCtx.userId, buildUserPublicReposCacheKey(payload.username, perPage), "user_public_repos", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildUserPublicReposCacheKey(payload.username, perPage), "user_public_repos", data);
       return;
     }
     case "user_public_orgs": {
       if (!payload.username) return;
       const data = await fetchUserPublicOrgsFromGitHub(authCtx.octokit, payload.username);
-      upsertGithubCacheEntry(authCtx.userId, buildUserPublicOrgsCacheKey(payload.username), "user_public_orgs", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildUserPublicOrgsCacheKey(payload.username), "user_public_orgs", data);
       return;
     }
   }
@@ -1056,122 +1117,152 @@ async function processGitDataSyncJob(
 
   switch (jobType) {
     case "repo": {
-      const data = await fetchRepoFromGitHub(authCtx.octokit, owner, repo);
-      upsertGithubCacheEntry(authCtx.userId, buildRepoCacheKey(owner, repo), "repo", data);
+      const repoKey = buildRepoCacheKey(owner, repo);
+      const repoCached = await getGithubCacheEntry(authCtx.userId, repoKey);
+      const repoRes = await ghConditionalGet(authCtx.token, `/repos/${owner}/${repo}`, repoCached?.etag ?? null);
+      if (repoRes.notModified) { await touchGithubCacheEntrySyncedAt(authCtx.userId, repoKey); }
+      else { await upsertGithubCacheEntry(authCtx.userId, repoKey, "repo", repoRes.data, repoRes.etag); }
       return;
     }
     case "repo_contents": {
       const path = payload.path ?? "";
       const ref = normalizeRef(payload.ref);
       const data = await fetchRepoContentsFromGitHub(authCtx.octokit, owner, repo, path, ref || undefined);
-      upsertGithubCacheEntry(authCtx.userId, buildRepoContentsCacheKey(owner, repo, path, ref), "repo_contents", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildRepoContentsCacheKey(owner, repo, path, ref), "repo_contents", data);
       return;
     }
     case "repo_tree": {
       if (!payload.treeSha) return;
       const recursive = payload.recursive === true;
       const data = await fetchRepoTreeFromGitHub(authCtx.octokit, owner, repo, payload.treeSha, recursive);
-      upsertGithubCacheEntry(authCtx.userId, buildRepoTreeCacheKey(owner, repo, payload.treeSha, recursive), "repo_tree", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildRepoTreeCacheKey(owner, repo, payload.treeSha, recursive), "repo_tree", data);
       return;
     }
     case "repo_branches": {
       const data = await fetchRepoBranchesFromGitHub(authCtx.octokit, owner, repo);
-      upsertGithubCacheEntry(authCtx.userId, buildRepoBranchesCacheKey(owner, repo), "repo_branches", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildRepoBranchesCacheKey(owner, repo), "repo_branches", data);
       return;
     }
     case "repo_tags": {
       const data = await fetchRepoTagsFromGitHub(authCtx.octokit, owner, repo);
-      upsertGithubCacheEntry(authCtx.userId, buildRepoTagsCacheKey(owner, repo), "repo_tags", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildRepoTagsCacheKey(owner, repo), "repo_tags", data);
       return;
     }
     case "file_content": {
       const path = payload.path ?? "";
       const ref = normalizeRef(payload.ref);
       const data = await fetchFileContentFromGitHub(authCtx.octokit, owner, repo, path, ref || undefined);
-      upsertGithubCacheEntry(authCtx.userId, buildFileContentCacheKey(owner, repo, path, ref), "file_content", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildFileContentCacheKey(owner, repo, path, ref), "file_content", data);
       return;
     }
     case "repo_readme": {
       const ref = normalizeRef(payload.ref);
-      const data = await fetchRepoReadmeFromGitHub(authCtx.octokit, owner, repo, ref || undefined);
-      upsertGithubCacheEntry(authCtx.userId, buildRepoReadmeCacheKey(owner, repo, ref), "repo_readme", data);
+      const rdKey = buildRepoReadmeCacheKey(owner, repo, ref);
+      const rdCached = await getGithubCacheEntry(authCtx.userId, rdKey);
+      const rdPath = `/repos/${owner}/${repo}/readme${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
+      try {
+        const rdRes = await ghConditionalGet(authCtx.token, rdPath, rdCached?.etag ?? null);
+        if (rdRes.notModified) { await touchGithubCacheEntrySyncedAt(authCtx.userId, rdKey); }
+        else {
+          const content = Buffer.from(rdRes.data.content, "base64").toString("utf-8");
+          await upsertGithubCacheEntry(authCtx.userId, rdKey, "repo_readme", { ...rdRes.data, content }, rdRes.etag);
+        }
+      } catch (e: any) {
+        // 404 = no readme
+        if (e.message?.includes("404")) { await upsertGithubCacheEntry(authCtx.userId, rdKey, "repo_readme", null); return; }
+        throw e;
+      }
       return;
     }
     case "repo_issues": {
       const state = payload.state ?? "open";
       const data = await fetchRepoIssuesFromGitHub(authCtx.octokit, owner, repo, state);
-      upsertGithubCacheEntry(authCtx.userId, buildRepoIssuesCacheKey(owner, repo, state), "repo_issues", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildRepoIssuesCacheKey(owner, repo, state), "repo_issues", data);
       return;
     }
     case "repo_pull_requests": {
       const state = payload.state ?? "open";
       const data = await fetchRepoPullRequestsFromGitHub(authCtx.octokit, owner, repo, state);
-      upsertGithubCacheEntry(authCtx.userId, buildRepoPullRequestsCacheKey(owner, repo, state), "repo_pull_requests", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildRepoPullRequestsCacheKey(owner, repo, state), "repo_pull_requests", data);
       return;
     }
     case "issue": {
       if (!payload.issueNumber) return;
-      const data = await fetchIssueFromGitHub(authCtx.octokit, owner, repo, payload.issueNumber);
-      upsertGithubCacheEntry(authCtx.userId, buildIssueCacheKey(owner, repo, payload.issueNumber), "issue", data);
+      const isKey = buildIssueCacheKey(owner, repo, payload.issueNumber);
+      const isCached = await getGithubCacheEntry(authCtx.userId, isKey);
+      const isRes = await ghConditionalGet(authCtx.token, `/repos/${owner}/${repo}/issues/${payload.issueNumber}`, isCached?.etag ?? null);
+      if (isRes.notModified) { await touchGithubCacheEntrySyncedAt(authCtx.userId, isKey); }
+      else { await upsertGithubCacheEntry(authCtx.userId, isKey, "issue", isRes.data, isRes.etag); }
       return;
     }
     case "issue_comments": {
       if (!payload.issueNumber) return;
       const data = await fetchIssueCommentsFromGitHub(authCtx.octokit, owner, repo, payload.issueNumber);
-      upsertGithubCacheEntry(authCtx.userId, buildIssueCommentsCacheKey(owner, repo, payload.issueNumber), "issue_comments", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildIssueCommentsCacheKey(owner, repo, payload.issueNumber), "issue_comments", data);
       return;
     }
     case "pull_request": {
       if (!payload.pullNumber) return;
-      const data = await fetchPullRequestFromGitHub(authCtx.octokit, owner, repo, payload.pullNumber);
-      upsertGithubCacheEntry(authCtx.userId, buildPullRequestCacheKey(owner, repo, payload.pullNumber), "pull_request", data);
+      const prKey = buildPullRequestCacheKey(owner, repo, payload.pullNumber);
+      const prCached = await getGithubCacheEntry(authCtx.userId, prKey);
+      const prRes = await ghConditionalGet(authCtx.token, `/repos/${owner}/${repo}/pulls/${payload.pullNumber}`, prCached?.etag ?? null);
+      if (prRes.notModified) { await touchGithubCacheEntrySyncedAt(authCtx.userId, prKey); }
+      else { await upsertGithubCacheEntry(authCtx.userId, prKey, "pull_request", prRes.data, prRes.etag); }
       return;
     }
     case "pull_request_files": {
       if (!payload.pullNumber) return;
       const data = await fetchPullRequestFilesFromGitHub(authCtx.octokit, owner, repo, payload.pullNumber);
-      upsertGithubCacheEntry(authCtx.userId, buildPullRequestFilesCacheKey(owner, repo, payload.pullNumber), "pull_request_files", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildPullRequestFilesCacheKey(owner, repo, payload.pullNumber), "pull_request_files", data);
       return;
     }
     case "pull_request_comments": {
       if (!payload.pullNumber) return;
       const data = await fetchPullRequestCommentsFromGitHub(authCtx.octokit, owner, repo, payload.pullNumber);
-      upsertGithubCacheEntry(authCtx.userId, buildPullRequestCommentsCacheKey(owner, repo, payload.pullNumber), "pull_request_comments", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildPullRequestCommentsCacheKey(owner, repo, payload.pullNumber), "pull_request_comments", data);
       return;
     }
     case "pull_request_reviews": {
       if (!payload.pullNumber) return;
       const data = await fetchPullRequestReviewsFromGitHub(authCtx.octokit, owner, repo, payload.pullNumber);
-      upsertGithubCacheEntry(authCtx.userId, buildPullRequestReviewsCacheKey(owner, repo, payload.pullNumber), "pull_request_reviews", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildPullRequestReviewsCacheKey(owner, repo, payload.pullNumber), "pull_request_reviews", data);
       return;
     }
     case "pull_request_commits": {
       if (!payload.pullNumber) return;
       const data = await fetchPullRequestCommitsFromGitHub(authCtx.octokit, owner, repo, payload.pullNumber);
-      upsertGithubCacheEntry(authCtx.userId, buildPullRequestCommitsCacheKey(owner, repo, payload.pullNumber), "pull_request_commits", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildPullRequestCommitsCacheKey(owner, repo, payload.pullNumber), "pull_request_commits", data);
       return;
     }
     case "repo_contributors": {
       const perPage = payload.perPage ?? 20;
       const data = await fetchRepoContributorsFromGitHub(authCtx.octokit, owner, repo, perPage);
-      upsertGithubCacheEntry(authCtx.userId, buildRepoContributorsCacheKey(owner, repo, perPage), "repo_contributors", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildRepoContributorsCacheKey(owner, repo, perPage), "repo_contributors", data);
       return;
     }
     case "repo_workflows": {
       const data = await fetchRepoWorkflowsFromGitHub(authCtx.octokit, owner, repo);
-      upsertGithubCacheEntry(authCtx.userId, buildRepoWorkflowsCacheKey(owner, repo), "repo_workflows", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildRepoWorkflowsCacheKey(owner, repo), "repo_workflows", data);
       return;
     }
     case "repo_workflow_runs": {
       const perPage = payload.perPage ?? 50;
       const data = await fetchRepoWorkflowRunsFromGitHub(authCtx.octokit, owner, repo, perPage);
-      upsertGithubCacheEntry(authCtx.userId, buildRepoWorkflowRunsCacheKey(owner, repo, perPage), "repo_workflow_runs", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildRepoWorkflowRunsCacheKey(owner, repo, perPage), "repo_workflow_runs", data);
       return;
     }
     case "repo_nav_counts": {
       const openIssuesAndPrs = payload.openIssuesAndPrs ?? 0;
       const data = await fetchRepoNavCountsFromGitHub(authCtx.octokit, owner, repo, openIssuesAndPrs);
-      upsertGithubCacheEntry(authCtx.userId, buildRepoNavCountsCacheKey(owner, repo), "repo_nav_counts", data);
+      await upsertGithubCacheEntry(authCtx.userId, buildRepoNavCountsCacheKey(owner, repo), "repo_nav_counts", data);
+      return;
+    }
+    case "pr_bundle": {
+      if (!payload.pullNumber) return;
+      const data = await fetchPRBundleFromGitHub(authCtx.token, owner, repo, payload.pullNumber);
+      if (data) {
+        await upsertGithubCacheEntry(authCtx.userId, buildPRBundleCacheKey(owner, repo, payload.pullNumber), "pr_bundle", data);
+      }
       return;
     }
     default:
@@ -1180,7 +1271,7 @@ async function processGitDataSyncJob(
 }
 
 async function drainGitDataSyncQueue(authCtx: GitHubAuthContext, limit = 4) {
-  const jobs = claimDueGithubSyncJobs<GitDataSyncJobPayload>(authCtx.userId, limit);
+  const jobs = await claimDueGithubSyncJobs<GitDataSyncJobPayload>(authCtx.userId, limit);
   if (jobs.length === 0) return 0;
 
   for (const job of jobs) {
@@ -1190,9 +1281,9 @@ async function drainGitDataSyncQueue(authCtx: GitHubAuthContext, limit = 4) {
         job.jobType as GitDataSyncJobType,
         job.payload
       );
-      markGithubSyncJobSucceeded(job.id);
+      await markGithubSyncJobSucceeded(job.id);
     } catch (error) {
-      markGithubSyncJobFailed(job.id, job.attempts, getSyncErrorMessage(error));
+      await markGithubSyncJobFailed(job.id, job.attempts, getSyncErrorMessage(error));
     }
   }
 
@@ -1215,13 +1306,13 @@ function triggerGitDataSyncDrain(authCtx: GitHubAuthContext) {
   })();
 }
 
-function enqueueGitDataSync(
+async function enqueueGitDataSync(
   authCtx: GitHubAuthContext,
   jobType: GitDataSyncJobType,
   cacheKey: string,
   payload: GitDataSyncJobPayload
 ) {
-  enqueueGithubSyncJob(authCtx.userId, `${jobType}:${cacheKey}`, jobType, payload);
+  await enqueueGithubSyncJob(authCtx.userId, `${jobType}:${cacheKey}`, jobType, payload);
   triggerGitDataSyncDrain(authCtx);
 }
 
@@ -1240,29 +1331,29 @@ async function readLocalFirstGitData<T>({
   if (authCtx.forceRefresh) {
     try {
       const data = await fetchRemote(authCtx.octokit);
-      upsertGithubCacheEntry(authCtx.userId, cacheKey, cacheType, data);
+      await upsertGithubCacheEntry(authCtx.userId, cacheKey, cacheType, data);
       return data;
     } catch {
       // Fall through to cached data on error
     }
   }
 
-  const cached = getGithubCacheEntry<T>(authCtx.userId, cacheKey);
+  const cached = await getGithubCacheEntry<T>(authCtx.userId, cacheKey);
   if (cached) {
     if (isStale(cached.syncedAt, ttlMs)) {
-      enqueueGitDataSync(authCtx, jobType, cacheKey, jobPayload);
+      await enqueueGitDataSync(authCtx, jobType, cacheKey, jobPayload);
     }
     return cached.data;
   }
 
   try {
     const data = await fetchRemote(authCtx.octokit);
-    upsertGithubCacheEntry(authCtx.userId, cacheKey, cacheType, data);
+    await upsertGithubCacheEntry(authCtx.userId, cacheKey, cacheType, data);
     return data;
   } catch (error) {
     const rl = isRateLimitError(error);
     if (rl) throw new GitHubRateLimitError(rl.resetAt, rl.limit, rl.used);
-    enqueueGitDataSync(authCtx, jobType, cacheKey, jobPayload);
+    await enqueueGitDataSync(authCtx, jobType, cacheKey, jobPayload);
     return fallback;
   }
 }
@@ -1471,14 +1562,21 @@ export async function getRepo(owner: string, repo: string) {
 }
 
 export async function checkIsStarred(owner: string, repo: string): Promise<boolean> {
-  const octokit = await getOctokit();
-  if (!octokit) return false;
-  const res = await octokit.request("GET /user/starred/{owner}/{repo}", {
-    owner,
-    repo,
-    request: { parseSuccessResponseBody: false },
-  }).catch(() => null);
-  return res?.status === 204;
+  const token = await getGitHubToken();
+  if (!token) return false;
+  try {
+    const res = await fetch(`https://api.github.com/user/starred/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      cache: "no-store",
+    });
+    return res.status === 204;
+  } catch {
+    return false;
+  }
 }
 
 export async function getRepoContents(
@@ -1816,6 +1914,320 @@ export async function getPullRequestReviewThreads(
   }
 }
 
+// --- PR Bundle (GraphQL) ---
+
+export interface PRBundleData {
+  pr: {
+    number: number;
+    title: string;
+    body: string | null;
+    state: string;
+    draft: boolean;
+    created_at: string;
+    merged_at: string | null;
+    mergeable: boolean | null;
+    additions: number;
+    deletions: number;
+    changed_files: number;
+    user: { login: string; avatar_url: string; type?: string } | null;
+    head: { ref: string; sha: string };
+    base: { ref: string; sha: string };
+    labels: { name: string; color: string | null; description: string | null }[];
+    reactions: any;
+  };
+  issueComments: {
+    id: number;
+    body: string;
+    created_at: string;
+    user: { login: string; avatar_url: string; type?: string } | null;
+    author_association: string;
+    reactions: any;
+  }[];
+  reviewComments: {
+    id: number;
+    body: string;
+    path: string;
+    line: number | null;
+    created_at: string;
+    user: { login: string; avatar_url: string; type?: string } | null;
+    pull_request_review_id: number;
+  }[];
+  reviews: {
+    id: number;
+    body: string | null;
+    state: string;
+    created_at: string;
+    submitted_at: string | null;
+    user: { login: string; avatar_url: string; type?: string } | null;
+  }[];
+  reviewThreads: ReviewThread[];
+  commits: {
+    sha: string;
+    commit: { message: string; author: { name: string; date: string } | null; committer: { name: string; date: string } | null };
+    author: { login: string; avatar_url: string } | null;
+  }[];
+}
+
+const PR_BUNDLE_QUERY = `
+  query($owner: String!, $repo: String!, $number: Int!) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) {
+        number
+        title
+        body
+        state
+        isDraft
+        createdAt
+        mergedAt
+        mergeable
+        additions
+        deletions
+        changedFiles
+        author { __typename login avatarUrl }
+        headRefName
+        headRefOid
+        baseRefName
+        baseRefOid
+        labels(first: 20) {
+          nodes { name color description }
+        }
+        reactions(first: 1) { totalCount }
+        reactionGroups {
+          content
+          reactors { totalCount }
+        }
+        comments(first: 100) {
+          nodes {
+            databaseId
+            body
+            createdAt
+            author { __typename login avatarUrl }
+            authorAssociation
+            reactionGroups {
+              content
+              reactors { totalCount }
+            }
+          }
+        }
+        reviews(first: 100) {
+          nodes {
+            databaseId
+            body
+            state
+            createdAt
+            submittedAt
+            author { __typename login avatarUrl }
+            comments(first: 50) {
+              nodes {
+                databaseId
+                body
+                path
+                line
+                originalLine
+                createdAt
+                author { __typename login avatarUrl }
+              }
+            }
+          }
+        }
+        reviewThreads(first: 100) {
+          nodes {
+            id
+            isResolved
+            isOutdated
+            path
+            line
+            startLine
+            diffSide
+            resolvedBy { login }
+            comments(first: 30) {
+              nodes {
+                id
+                databaseId
+                body
+                createdAt
+                author { __typename login avatarUrl }
+                pullRequestReview { state }
+              }
+            }
+          }
+        }
+        commits(first: 100) {
+          nodes {
+            commit {
+              oid
+              message
+              author { name date }
+              committer { name date }
+            }
+            resourcePath
+          }
+        }
+      }
+    }
+  }
+`;
+
+function mapReactionGroups(groups: any[] | undefined): any {
+  if (!groups) return undefined;
+  const map: Record<string, number> = {};
+  let total = 0;
+  for (const g of groups) {
+    const count = g.reactors?.totalCount ?? 0;
+    if (count > 0) {
+      const key = (g.content as string).toLowerCase()
+        .replace("thumbs_up", "+1")
+        .replace("thumbs_down", "-1");
+      map[key] = count;
+      total += count;
+    }
+  }
+  return { ...map, total_count: total };
+}
+
+function transformGraphQLPRBundle(node: any): PRBundleData {
+  const stateMap: Record<string, string> = { OPEN: "open", CLOSED: "closed", MERGED: "closed" };
+  const mergeableMap: Record<string, boolean | null> = { MERGEABLE: true, CONFLICTING: false, UNKNOWN: null };
+
+  const pr = {
+    number: node.number,
+    title: node.title,
+    body: node.body,
+    state: stateMap[node.state] ?? "open",
+    draft: node.isDraft ?? false,
+    created_at: node.createdAt,
+    merged_at: node.mergedAt ?? null,
+    mergeable: mergeableMap[node.mergeable] ?? null,
+    additions: node.additions ?? 0,
+    deletions: node.deletions ?? 0,
+    changed_files: node.changedFiles ?? 0,
+    user: node.author ? { login: node.author.login, avatar_url: node.author.avatarUrl, type: node.author.__typename } : null,
+    head: { ref: node.headRefName, sha: node.headRefOid },
+    base: { ref: node.baseRefName, sha: node.baseRefOid },
+    labels: (node.labels?.nodes ?? []).map((l: any) => ({
+      name: l.name,
+      color: l.color ?? null,
+      description: l.description ?? null,
+    })),
+    reactions: mapReactionGroups(node.reactionGroups),
+  };
+
+  const issueComments = (node.comments?.nodes ?? []).map((c: any) => ({
+    id: c.databaseId,
+    body: c.body ?? "",
+    created_at: c.createdAt,
+    user: c.author ? { login: c.author.login, avatar_url: c.author.avatarUrl, type: c.author.__typename } : null,
+    author_association: c.authorAssociation ?? "NONE",
+    reactions: mapReactionGroups(c.reactionGroups),
+  }));
+
+  const reviewComments: PRBundleData["reviewComments"] = [];
+  const reviews = (node.reviews?.nodes ?? []).map((r: any) => {
+    const reviewId = r.databaseId;
+    for (const rc of r.comments?.nodes ?? []) {
+      reviewComments.push({
+        id: rc.databaseId,
+        body: rc.body ?? "",
+        path: rc.path ?? "",
+        line: rc.line ?? rc.originalLine ?? null,
+        created_at: rc.createdAt,
+        user: rc.author ? { login: rc.author.login, avatar_url: rc.author.avatarUrl, type: rc.author.__typename } : null,
+        pull_request_review_id: reviewId,
+      });
+    }
+    return {
+      id: reviewId,
+      body: r.body || null,
+      state: r.state,
+      created_at: r.createdAt,
+      submitted_at: r.submittedAt ?? null,
+      user: r.author ? { login: r.author.login, avatar_url: r.author.avatarUrl, type: r.author.__typename } : null,
+    };
+  });
+
+  const reviewThreads: ReviewThread[] = (node.reviewThreads?.nodes ?? []).map((thread: any) => ({
+    id: thread.id,
+    isResolved: thread.isResolved ?? false,
+    isOutdated: thread.isOutdated ?? false,
+    path: thread.path ?? "",
+    line: thread.line ?? null,
+    startLine: thread.startLine ?? null,
+    diffSide: thread.diffSide ?? "RIGHT",
+    resolvedBy: thread.resolvedBy ? { login: thread.resolvedBy.login } : null,
+    comments: (thread.comments?.nodes ?? []).map((c: any) => ({
+      id: c.id,
+      databaseId: c.databaseId,
+      body: c.body ?? "",
+      createdAt: c.createdAt ?? "",
+      author: c.author ? { login: c.author.login, avatarUrl: c.author.avatarUrl } : null,
+      reviewState: c.pullRequestReview?.state ?? null,
+    })),
+  }));
+
+  const commits = (node.commits?.nodes ?? []).map((n: any) => {
+    const c = n.commit;
+    return {
+      sha: c.oid,
+      commit: {
+        message: c.message,
+        author: c.author ? { name: c.author.name, date: c.author.date } : null,
+        committer: c.committer ? { name: c.committer.name, date: c.committer.date } : null,
+      },
+      author: null, // GraphQL commits don't include the GitHub user association directly
+    };
+  });
+
+  return { pr, issueComments, reviewComments, reviews, reviewThreads, commits };
+}
+
+async function fetchPRBundleFromGitHub(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<PRBundleData | null> {
+  try {
+    const response = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: PR_BUNDLE_QUERY,
+        variables: { owner, repo, number: pullNumber },
+      }),
+    });
+
+    if (!response.ok) return null;
+    const json = await response.json();
+    const prNode = json.data?.repository?.pullRequest;
+    if (!prNode) return null;
+
+    return transformGraphQLPRBundle(prNode);
+  } catch {
+    return null;
+  }
+}
+
+export async function getPullRequestBundle(
+  owner: string,
+  repo: string,
+  pullNumber: number
+): Promise<PRBundleData | null> {
+  const authCtx = await getGitHubAuthContext();
+  return readLocalFirstGitData({
+    authCtx,
+    cacheKey: buildPRBundleCacheKey(owner, repo, pullNumber),
+    cacheType: "pr_bundle",
+    ttlMs: CACHE_TTL_MS.prBundle,
+    fallback: null,
+    jobType: "pr_bundle",
+    jobPayload: { owner, repo, pullNumber },
+    fetchRemote: () => fetchPRBundleFromGitHub(authCtx!.token, owner, repo, pullNumber),
+  });
+}
+
 export async function getIssue(
   owner: string,
   repo: string,
@@ -1941,7 +2353,7 @@ export async function invalidateRepoPullRequestsCache(
   const authCtx = await getGitHubAuthContext();
   if (!authCtx) return;
   const prefix = `repo_pull_requests:${normalizeRepoKey(owner, repo)}`;
-  deleteGithubCacheByPrefix(authCtx.userId, prefix);
+  await deleteGithubCacheByPrefix(authCtx.userId, prefix);
 }
 
 export async function invalidatePullRequestCache(
@@ -1953,10 +2365,25 @@ export async function invalidatePullRequestCache(
   if (!authCtx) return;
   // Invalidate the PR detail + list caches
   const key = normalizeRepoKey(owner, repo);
-  deleteGithubCacheByPrefix(authCtx.userId, `pull_request:${key}:${pullNumber}`);
-  deleteGithubCacheByPrefix(authCtx.userId, `pull_request_comments:${key}:${pullNumber}`);
-  deleteGithubCacheByPrefix(authCtx.userId, `pull_request_reviews:${key}:${pullNumber}`);
-  deleteGithubCacheByPrefix(authCtx.userId, `repo_pull_requests:${key}`);
+  await deleteGithubCacheByPrefix(authCtx.userId, `pr_bundle:${key}:${pullNumber}`);
+  await deleteGithubCacheByPrefix(authCtx.userId, `pull_request:${key}:${pullNumber}`);
+  await deleteGithubCacheByPrefix(authCtx.userId, `pull_request_comments:${key}:${pullNumber}`);
+  await deleteGithubCacheByPrefix(authCtx.userId, `pull_request_reviews:${key}:${pullNumber}`);
+  await deleteGithubCacheByPrefix(authCtx.userId, `pull_request_commits:${key}:${pullNumber}`);
+  await deleteGithubCacheByPrefix(authCtx.userId, `pull_request_files:${key}:${pullNumber}`);
+  await deleteGithubCacheByPrefix(authCtx.userId, `repo_pull_requests:${key}`);
+}
+
+export async function invalidateFileContentCache(
+  owner: string,
+  repo: string,
+  path: string,
+  ref?: string
+) {
+  const authCtx = await getGitHubAuthContext();
+  if (!authCtx) return;
+  const key = buildFileContentCacheKey(owner, repo, path, ref);
+  await deleteGithubCacheByPrefix(authCtx.userId, key);
 }
 
 export async function invalidateRepoIssuesCache(
@@ -1966,7 +2393,7 @@ export async function invalidateRepoIssuesCache(
   const authCtx = await getGitHubAuthContext();
   if (!authCtx) return;
   const prefix = `repo_issues:${normalizeRepoKey(owner, repo)}`;
-  deleteGithubCacheByPrefix(authCtx.userId, prefix);
+  await deleteGithubCacheByPrefix(authCtx.userId, prefix);
 }
 
 export async function invalidateIssueCache(
@@ -1977,9 +2404,9 @@ export async function invalidateIssueCache(
   const authCtx = await getGitHubAuthContext();
   if (!authCtx) return;
   const key = normalizeRepoKey(owner, repo);
-  deleteGithubCacheByPrefix(authCtx.userId, `issue:${key}:${issueNumber}`);
-  deleteGithubCacheByPrefix(authCtx.userId, `issue_comments:${key}:${issueNumber}`);
-  deleteGithubCacheByPrefix(authCtx.userId, `repo_issues:${key}`);
+  await deleteGithubCacheByPrefix(authCtx.userId, `issue:${key}:${issueNumber}`);
+  await deleteGithubCacheByPrefix(authCtx.userId, `issue_comments:${key}:${issueNumber}`);
+  await deleteGithubCacheByPrefix(authCtx.userId, `repo_issues:${key}`);
 }
 
 export async function getRepoPullRequests(
@@ -2074,10 +2501,20 @@ async function fetchCheckStatusForRef(
 ): Promise<CheckStatus | null> {
   if (!octokit) return null;
 
-  const [commitStatuses, checkRuns] = await Promise.all([
-    octokit.repos.getCombinedStatusForRef({ owner, repo, ref }).catch(() => null),
-    octokit.checks.listForRef({ owner, repo, ref, per_page: 100 }).catch(() => null),
-  ]);
+  let commitStatuses: Awaited<ReturnType<typeof octokit.repos.getCombinedStatusForRef>> | null = null;
+  let checkRuns: Awaited<ReturnType<typeof octokit.checks.listForRef>> | null = null;
+
+  try {
+    commitStatuses = await octokit.repos.getCombinedStatusForRef({ owner, repo, ref });
+  } catch {
+    // Token may lack repo status permissions
+  }
+
+  try {
+    checkRuns = await octokit.checks.listForRef({ owner, repo, ref, per_page: 100 });
+  } catch {
+    // Token may lack checks permission (403 for some repos)
+  }
 
   const checks: CheckRun[] = [];
 
@@ -2450,6 +2887,119 @@ export async function getRepoSecurityTabData(
   };
 }
 
+export interface SecurityAdvisoryDetail {
+  ghsaId: string;
+  cveId: string | null;
+  state: string;
+  severity: string | null;
+  cvss: { score: number; vectorString: string } | null;
+  cwes: { cweId: string; name: string }[];
+  summary: string;
+  description: string | null;
+  vulnerabilities: {
+    packageName: string | null;
+    ecosystem: string | null;
+    vulnerableVersionRange: string | null;
+    patchedVersions: string | null;
+  }[];
+  credits: { login: string; avatarUrl: string; type: string }[];
+  author: { login: string; avatarUrl: string } | null;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt: string | null;
+  closedAt: string | null;
+  htmlUrl: string;
+}
+
+function mapAdvisoryDetail(data: unknown): SecurityAdvisoryDetail {
+  const row = asRecord(data);
+  const cvss = asRecord(row?.cvss);
+  const cwes = Array.isArray(row?.cwes)
+    ? (row.cwes as unknown[]).map((c) => {
+        const cwe = asRecord(c);
+        return {
+          cweId: asString(cwe?.cwe_id) ?? "",
+          name: asString(cwe?.name) ?? "",
+        };
+      })
+    : [];
+  const vulnerabilities = Array.isArray(row?.vulnerabilities)
+    ? (row.vulnerabilities as unknown[]).map((v) => {
+        const vuln = asRecord(v);
+        const pkg = asRecord(vuln?.package);
+        const firstPatched = asRecord(vuln?.first_patched_version);
+        return {
+          packageName: asString(pkg?.name),
+          ecosystem: asString(pkg?.ecosystem),
+          vulnerableVersionRange: asString(vuln?.vulnerable_version_range),
+          patchedVersions: asString(firstPatched?.identifier),
+        };
+      })
+    : [];
+  const credits = Array.isArray(row?.credits)
+    ? (row.credits as unknown[]).map((c) => {
+        const credit = asRecord(c);
+        const user = asRecord(credit?.user);
+        return {
+          login: asString(user?.login) ?? "",
+          avatarUrl: asString(user?.avatar_url) ?? "",
+          type: asString(credit?.type) ?? "",
+        };
+      })
+    : [];
+  const authorRaw = asRecord(row?.author);
+
+  const cvssScore = asNumber(cvss?.score);
+  const cvssVector = asString(cvss?.vector_string);
+
+  return {
+    ghsaId: asString(row?.ghsa_id) ?? "",
+    cveId: asString(row?.cve_id),
+    state: asString(row?.state) ?? "unknown",
+    severity: asString(row?.severity),
+    cvss:
+      cvssScore !== null && cvssVector
+        ? { score: cvssScore, vectorString: cvssVector }
+        : null,
+    cwes,
+    summary: asString(row?.summary) ?? "No summary available",
+    description: asString(row?.description),
+    vulnerabilities,
+    credits,
+    author: authorRaw
+      ? {
+          login: asString(authorRaw.login) ?? "",
+          avatarUrl: asString(authorRaw.avatar_url) ?? "",
+        }
+      : null,
+    createdAt: asString(row?.created_at) ?? "",
+    updatedAt: asString(row?.updated_at) ?? "",
+    publishedAt: asString(row?.published_at),
+    closedAt: asString(row?.closed_at),
+    htmlUrl: asString(row?.html_url) ?? "",
+  };
+}
+
+export async function getRepositoryAdvisory(
+  owner: string,
+  repo: string,
+  ghsaId: string
+): Promise<SecurityAdvisoryDetail | null> {
+  const octokit = await getOctokit();
+  if (!octokit) return null;
+
+  try {
+    const { data } = await (octokit.securityAdvisories as any).getRepositoryAdvisory({
+      owner,
+      repo,
+      ghsa_id: ghsaId,
+    });
+    return mapAdvisoryDetail(data);
+  } catch {
+    return null;
+  }
+}
+
 export async function searchGitHubRepos(
   query: string,
   language?: string,
@@ -2772,6 +3322,26 @@ export async function getLanguages(
   }
 }
 
+export async function getRepoEvents(
+  owner: string,
+  repo: string,
+  perPage = 30
+) {
+  const octokit = await getOctokit();
+  if (!octokit) return [];
+
+  try {
+    const { data } = await octokit.activity.listRepoEvents({
+      owner,
+      repo,
+      per_page: perPage,
+    });
+    return data;
+  } catch {
+    return [];
+  }
+}
+
 export interface PersonRepoActivity {
   commits: { sha: string; message: string; date: string }[];
   prs: { number: number; title: string; state: string; created_at: string }[];
@@ -2779,14 +3349,12 @@ export interface PersonRepoActivity {
   reviews: { pr_number: number; pr_title: string; submitted_at: string }[];
 }
 
-export async function getPersonRepoActivity(
+async function fetchPersonRepoActivityFromGitHub(
+  octokit: Octokit,
   owner: string,
   repo: string,
   username: string
 ): Promise<PersonRepoActivity> {
-  const octokit = await getOctokit();
-  if (!octokit) return { commits: [], prs: [], issues: [], reviews: [] };
-
   const [commitsResult, prsResult, issuesResult, reviewsResult] = await Promise.allSettled([
     octokit.repos
       .listCommits({ owner, repo, author: username, per_page: 30 })
@@ -2849,6 +3417,24 @@ export async function getPersonRepoActivity(
     issues: issuesResult.status === "fulfilled" ? issuesResult.value : [],
     reviews: reviewsResult.status === "fulfilled" ? reviewsResult.value : [],
   };
+}
+
+export async function getPersonRepoActivity(
+  owner: string,
+  repo: string,
+  username: string
+): Promise<PersonRepoActivity> {
+  const authCtx = await getGitHubAuthContext();
+  return readLocalFirstGitData({
+    authCtx,
+    cacheKey: buildPersonRepoActivityCacheKey(owner, repo, username),
+    cacheType: "person_repo_activity",
+    ttlMs: CACHE_TTL_MS.personRepoActivity,
+    fallback: { commits: [], prs: [], issues: [], reviews: [] },
+    jobType: "person_repo_activity",
+    jobPayload: { owner, repo, username },
+    fetchRemote: (octokit) => fetchPersonRepoActivityFromGitHub(octokit, owner, repo, username),
+  });
 }
 
 export async function getRepoCommits(

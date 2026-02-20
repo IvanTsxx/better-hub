@@ -462,7 +462,7 @@ export function PRsList({
                         )
                       }
                       className={cn(
-                        "flex items-center gap-1.5 px-2 py-1 text-[10px] border transition-colors cursor-pointer font-mono",
+                        "flex items-center gap-1.5 px-2 py-1 text-[10px] border rounded-full transition-colors cursor-pointer font-mono",
                         selectedBranch === branch
                           ? "border-foreground/30 bg-muted/50 dark:bg-white/4 text-foreground"
                           : "border-border text-muted-foreground hover:bg-muted/60 dark:hover:bg-white/3"
@@ -492,7 +492,7 @@ export function PRsList({
                         )
                       }
                       className={cn(
-                        "flex items-center gap-1.5 px-2 py-1 text-[10px] border transition-colors cursor-pointer font-mono",
+                        "flex items-center gap-1.5 px-2 py-1 text-[10px] border rounded-full transition-colors cursor-pointer font-mono",
                         selectedLabel === label.name
                           ? "border-foreground/30 bg-muted/50 dark:bg-white/4 text-foreground"
                           : "border-border text-muted-foreground hover:bg-muted/60 dark:hover:bg-white/3"
@@ -545,7 +545,7 @@ export function PRsList({
       </div>
 
       {/* PR List */}
-      <div className="relative flex-1 min-h-0 overflow-y-auto border border-border divide-y divide-border">
+      <div className="relative flex-1 min-h-0 overflow-y-auto divide-y divide-border">
           <LoadingOverlay show={isPending} />
           {visible.map((pr) => {
             const isMerged = !!pr.merged_at;
@@ -557,16 +557,18 @@ export function PRsList({
                 href={`/${owner}/${repo}/pulls/${pr.number}`}
                 className="group flex items-start gap-3 px-4 py-3 hover:bg-muted/50 dark:hover:bg-white/[0.02] transition-colors"
               >
-                <GitPullRequest
-                  className={cn(
-                    "w-3.5 h-3.5 shrink-0 mt-0.5",
-                    isMerged
-                      ? "text-alert-important"
-                      : pr.draft
-                        ? "text-muted-foreground/70"
-                        : "text-success"
-                  )}
-                />
+                {isMerged ? (
+                  <GitMerge className="w-3.5 h-3.5 shrink-0 mt-0.5 text-alert-important" />
+                ) : pr.state === "closed" ? (
+                  <GitPullRequestClosed className="w-3.5 h-3.5 shrink-0 mt-0.5 text-destructive" />
+                ) : (
+                  <GitPullRequest
+                    className={cn(
+                      "w-3.5 h-3.5 shrink-0 mt-0.5",
+                      pr.draft ? "text-muted-foreground/70" : "text-success"
+                    )}
+                  />
+                )}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm truncate group-hover:text-foreground transition-colors">

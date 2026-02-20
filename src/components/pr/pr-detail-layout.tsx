@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Code2,
   MessageCircle,
+  ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ResizeHandle } from "@/components/ui/resize-handle";
@@ -16,6 +17,8 @@ interface PRDetailLayoutProps {
   conversationPanel: React.ReactNode;
   /** Sticky comment form pinned to the bottom of the conversation panel */
   commentForm?: React.ReactNode;
+  /** Full-width conflict resolution panel — replaces split view when provided */
+  conflictPanel?: React.ReactNode;
   commentCount: number;
   fileCount: number;
   hasReviews?: boolean;
@@ -26,17 +29,42 @@ export function PRDetailLayout({
   diffPanel,
   conversationPanel,
   commentForm,
+  conflictPanel,
   commentCount,
   fileCount,
   hasReviews,
 }: PRDetailLayoutProps) {
   const [mobileTab, setMobileTab] = useState<MobileTab>("diff");
-  const [splitRatio, setSplitRatio] = useState(hasReviews ? 100 : 65);
   const [isDragging, setIsDragging] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const userAdjustedRef = useRef(false);
+
+  const SK = "pr-split-adjusted";
+  const [splitRatio, setSplitRatio] = useState(() => {
+    // SSR-safe: always start at 65 (conversation visible)
+    return 65;
+  });
+
+  // On mount, check if user already adjusted this session — if so, restore their preference
+  useEffect(() => {
+    const stored = sessionStorage.getItem(SK);
+    if (stored !== null) {
+      const v = Number(stored);
+      if (Number.isFinite(v)) {
+        setSplitRatio(v);
+        userAdjustedRef.current = true;
+      }
+    }
+  }, []);
 
   const codeCollapsed = splitRatio <= 3;
   const chatCollapsed = splitRatio >= 97;
+
+  const persistSplit = useCallback((v: number) => {
+    setSplitRatio(v);
+    userAdjustedRef.current = true;
+    try { sessionStorage.setItem(SK, String(v)); } catch {}
+  }, []);
 
   const handleResize = useCallback(
     (clientX: number) => {
@@ -44,19 +72,31 @@ export function PRDetailLayout({
       const rect = containerRef.current.getBoundingClientRect();
       const x = clientX - rect.left;
       const pct = Math.round((x / rect.width) * 100);
-      if (pct > 95) setSplitRatio(100);
-      else if (pct < 5) setSplitRatio(0);
-      else setSplitRatio(Math.max(25, Math.min(75, pct)));
+      if (pct > 95) persistSplit(100);
+      else if (pct < 5) persistSplit(0);
+      else persistSplit(Math.max(25, Math.min(75, pct)));
     },
-    []
+    [persistSplit]
   );
 
   const handleDoubleClick = useCallback(() => {
-    setSplitRatio(65);
-  }, []);
+    persistSplit(65);
+  }, [persistSplit]);
 
-  const handleRestoreChat = () => setSplitRatio(65);
-  const handleRestoreCode = () => setSplitRatio(65);
+  const handleRestoreChat = () => persistSplit(65);
+  const handleRestoreCode = () => persistSplit(65);
+
+  // Full-width conflict resolver mode
+  if (conflictPanel) {
+    return (
+      <div className="flex-1 min-h-0 flex flex-col">
+        <div className="shrink-0 px-4 pt-3">{infoBar}</div>
+        <div className="flex-1 min-h-0 flex flex-col">
+          {conflictPanel}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -94,7 +134,7 @@ export function PRDetailLayout({
       <div ref={containerRef} className="flex-1 min-h-0 hidden lg:flex">
         {/* Left panel (files + reviews) */}
         <div
-          className="min-h-0 flex overflow-hidden"
+          className="min-h-0 flex overflow-hidden border-r border-border/40"
           style={{
             width: `${splitRatio}%`,
             transition: isDragging ? "none" : "width 0.2s cubic-bezier(0.4,0,0.2,1)",
@@ -156,7 +196,7 @@ export function PRDetailLayout({
 
         {/* Right panel (conversation) */}
         <div
-          className="min-h-0 flex flex-col overflow-hidden"
+          className="relative min-h-0 flex flex-col overflow-hidden"
           style={{
             width: `${100 - splitRatio}%`,
             transition: isDragging ? "none" : "width 0.2s cubic-bezier(0.4,0,0.2,1)",
@@ -164,7 +204,16 @@ export function PRDetailLayout({
         >
           {!chatCollapsed && (
             <>
-              <div className="flex-1 overflow-y-auto min-h-0 px-3 pb-3">
+              <div className="shrink-0 flex items-center px-2 pt-2">
+                <button
+                  onClick={() => persistSplit(100)}
+                  className="flex items-center justify-center w-6 h-6 rounded-full border border-border bg-background text-muted-foreground/40 hover:text-muted-foreground hover:border-border/80 transition-all cursor-pointer"
+                  title="Hide conversation"
+                >
+                  <ChevronRight className="w-3 h-3" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto overscroll-contain min-h-0 px-3 pb-3">
                 {conversationPanel}
               </div>
               {commentForm && (
@@ -183,7 +232,7 @@ export function PRDetailLayout({
           {diffPanel}
         </div>
         <div className={cn("flex-1 min-h-0 flex flex-col", mobileTab === "chat" ? "flex" : "hidden")}>
-          <div className="flex-1 overflow-y-auto min-h-0 px-3 pb-3">
+          <div className="flex-1 overflow-y-auto overscroll-contain min-h-0 px-3 pb-3">
             {conversationPanel}
           </div>
           {commentForm && (

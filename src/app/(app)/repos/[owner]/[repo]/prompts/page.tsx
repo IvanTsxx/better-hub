@@ -7,7 +7,7 @@ export default async function PromptsPage({
   params: Promise<{ owner: string; repo: string }>;
 }) {
   const { owner, repo } = await params;
-  const promptRequests = listPromptRequests(owner, repo);
+  const promptRequests = await listPromptRequests(owner, repo);
 
   return (
     <PromptList

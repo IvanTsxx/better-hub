@@ -10,8 +10,11 @@ import {
   RotateCcw,
   Loader2,
   Check,
+  Ghost,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useGlobalChat } from "@/components/shared/global-chat-provider";
 import {
   Dialog,
   DialogContent,
@@ -32,6 +35,8 @@ interface PRMergePanelProps {
   repo: string;
   pullNumber: number;
   prTitle: string;
+  prBody?: string;
+  commitMessages?: string[];
   state: string;
   merged: boolean;
   mergeable: boolean | null;
@@ -64,12 +69,16 @@ export function PRMergePanel({
   repo,
   pullNumber,
   prTitle,
+  prBody,
+  commitMessages,
   state,
   merged,
   mergeable,
   allowMergeCommit,
   allowSquashMerge,
   allowRebaseMerge,
+  headBranch,
+  baseBranch,
   canWrite = true,
   canTriage = true,
 }: PRMergePanelProps) {
@@ -80,6 +89,7 @@ export function PRMergePanel({
   ];
 
   const router = useRouter();
+  const { openChat } = useGlobalChat();
   const [method, setMethod] = useState<MergeMethod>(
     availableMethods[0] ?? "merge"
   );
@@ -90,9 +100,67 @@ export function PRMergePanel({
   const [isPending, startTransition] = useTransition();
   const [result, setResult] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [isMerged, setIsMerged] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useClickOutside(dropdownRef, useCallback(() => setDropdownOpen(false), []));
+
+  const handleFixWithGhost = () => {
+    openChat({
+      chatType: "pr",
+      contextKey: `${owner}/${repo}#${pullNumber}`,
+      contextBody: {
+        prContext: {
+          owner,
+          repo,
+          pullNumber,
+          prTitle,
+          prBody: "",
+          baseBranch,
+          headBranch,
+          files: [],
+          mergeConflict: true,
+        },
+      },
+      placeholder: "Ask Ghost about this PR...",
+      emptyTitle: "Ghost",
+      emptyDescription: "Resolving merge conflicts...",
+    });
+    setTimeout(() => {
+      window.dispatchEvent(
+        new CustomEvent("ghost-auto-send", {
+          detail: {
+            message:
+              "Fix the merge conflicts in this PR. Resolve all conflicting files and push the fix.",
+          },
+        })
+      );
+    }, 300);
+  };
+
+  const generateCommitMessage = async () => {
+    setIsGenerating(true);
+    try {
+      const res = await fetch("/api/ai/commit-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "squash",
+          prTitle,
+          prBody: prBody || "",
+          prNumber: pullNumber,
+          commits: commitMessages || [],
+        }),
+      });
+      const data = await res.json();
+      if (data.title) setCommitTitle(data.title);
+      if (data.description) setCommitMessage(data.description);
+    } catch {
+      // silently fail
+    } finally {
+      setIsGenerating(false);
+    }
+  };
 
   useEffect(() => {
     if (result) {
@@ -111,7 +179,7 @@ export function PRMergePanel({
         setResult({ type: "success", message: "Merged" });
         setSquashDialogOpen(false);
         setIsMerged(true);
-        setTimeout(() => router.refresh(), 1500);
+        router.refresh();
       }
     });
   };
@@ -203,66 +271,109 @@ export function PRMergePanel({
         {/* Merge button with dropdown */}
         {canWrite && (
           <div ref={dropdownRef} className="relative">
-            <div className="flex items-center border border-foreground/80 divide-x divide-foreground/20">
+            <div className={cn(
+              "flex items-center divide-x",
+              mergeable === false
+                ? "border border-amber-500/40 divide-amber-500/20"
+                : "border border-foreground/80 divide-foreground/20"
+            )}>
               <button
-                onClick={handleMergeClick}
-                disabled={isPending}
+                onClick={mergeable === false ? undefined : handleMergeClick}
+                disabled={isPending || mergeable === false}
                 className={cn(
-                  "flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
+                  "flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider transition-colors disabled:cursor-not-allowed",
                   mergeable === false
-                    ? "bg-foreground/70 text-background hover:bg-foreground/60"
-                    : "bg-foreground text-background hover:bg-foreground/90"
+                    ? "bg-amber-500/80 text-background opacity-90"
+                    : "bg-foreground text-background hover:bg-foreground/90 cursor-pointer disabled:opacity-50"
                 )}
-                title={mergeable === false ? "There may be conflicts — merge might fail" : undefined}
+                title={mergeable === false ? "Resolve conflicts before merging" : undefined}
               >
                 {isPending ? (
                   <Loader2 className="w-3 h-3 animate-spin" />
+                ) : mergeable === false ? (
+                  <>
+                    <GitMerge className="w-3 h-3" />
+                    <span className="text-[9px] opacity-70">⚠</span>
+                  </>
                 ) : (
                   <GitMerge className="w-3 h-3" />
                 )}
-                {mergeMethodLabels[method].short}
+                {mergeable === false ? "Conflicts" : mergeMethodLabels[method].short}
               </button>
 
-              {availableMethods.length > 1 && (
-                <button
-                  onClick={() => setDropdownOpen((o) => !o)}
-                  disabled={isPending}
-                  className={cn(
-                    "flex items-center self-stretch px-1.5 text-background transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
-                    mergeable === false
-                      ? "bg-foreground/70 hover:bg-foreground/60"
-                      : "bg-foreground hover:bg-foreground/90"
-                  )}
-                >
-                  <ChevronDown className="w-3 h-3" />
-                </button>
-              )}
+              <button
+                onClick={() => setDropdownOpen((o) => !o)}
+                disabled={isPending}
+                className={cn(
+                  "flex items-center self-stretch px-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
+                  mergeable === false
+                    ? "bg-amber-500/80 text-background hover:bg-amber-500/70"
+                    : "bg-foreground text-background hover:bg-foreground/90"
+                )}
+              >
+                <ChevronDown className="w-3 h-3" />
+              </button>
             </div>
 
             {dropdownOpen && (
-              <div className="absolute top-full right-0 mt-1 w-48 bg-background border border-border shadow-lg dark:shadow-2xl z-50 py-1">
-                {availableMethods.map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => {
-                      setMethod(m);
-                      setDropdownOpen(false);
-                    }}
-                    className={cn(
-                      "w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors cursor-pointer",
-                      method === m
-                        ? "bg-muted/50 dark:bg-white/[0.04] text-foreground"
-                        : "text-muted-foreground hover:bg-muted/40 dark:hover:bg-white/[0.03] hover:text-foreground"
-                    )}
-                  >
-                    {method === m ? (
-                      <Check className="w-3 h-3 shrink-0" />
-                    ) : (
-                      <div className="w-3 h-3 shrink-0" />
-                    )}
-                    <span className="text-xs">{mergeMethodLabels[m].description}</span>
-                  </button>
-                ))}
+              <div className="absolute top-full right-0 mt-1 w-52 bg-background border border-border shadow-lg dark:shadow-2xl z-50 py-1">
+                {availableMethods.map((m) => {
+                  const disabled = mergeable === false;
+                  return (
+                    <button
+                      key={m}
+                      disabled={disabled}
+                      onClick={() => {
+                        if (disabled) return;
+                        setMethod(m);
+                        setDropdownOpen(false);
+                      }}
+                      className={cn(
+                        "w-full flex items-center gap-2 px-3 py-1.5 text-left transition-colors",
+                        disabled
+                          ? "opacity-40 cursor-not-allowed"
+                          : "cursor-pointer",
+                        !disabled && method === m
+                          ? "bg-muted/50 dark:bg-white/[0.04] text-foreground"
+                          : !disabled
+                            ? "text-muted-foreground hover:bg-muted/40 dark:hover:bg-white/[0.03] hover:text-foreground"
+                            : "text-muted-foreground"
+                      )}
+                    >
+                      {!disabled && method === m ? (
+                        <Check className="w-3 h-3 shrink-0" />
+                      ) : (
+                        <div className="w-3 h-3 shrink-0" />
+                      )}
+                      <span className="text-xs">{mergeMethodLabels[m].description}</span>
+                    </button>
+                  );
+                })}
+                {mergeable === false && (
+                  <>
+                    <div className="border-t border-border/40 my-1" />
+                    <button
+                      onClick={() => {
+                        setDropdownOpen(false);
+                        router.push(`?resolve=conflicts`);
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-amber-500 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                    >
+                      <GitMerge className="w-3 h-3 shrink-0" />
+                      <span className="text-xs">Resolve conflicts</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setDropdownOpen(false);
+                        handleFixWithGhost();
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-amber-500 hover:bg-amber-500/10 transition-colors cursor-pointer"
+                    >
+                      <Ghost className="w-3 h-3 shrink-0" />
+                      <span className="text-xs">Fix conflicts with Ghost</span>
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -273,7 +384,7 @@ export function PRMergePanel({
           <button
             onClick={handleClose}
             disabled={isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:text-foreground hover:bg-muted/60 dark:hover:bg-white/3 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider border border-red-300/40 dark:border-red-500/20 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <XCircle className="w-3 h-3" />
             Close
@@ -295,13 +406,24 @@ export function PRMergePanel({
               <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground block mb-1.5">
                 Commit message
               </label>
-              <input
-                type="text"
-                value={commitTitle}
-                onChange={(e) => setCommitTitle(e.target.value)}
-                className="w-full bg-transparent border border-border px-3 py-2 text-sm font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:border-foreground/20 focus:ring-[3px] focus:ring-ring/50 transition-colors rounded-md"
-                placeholder="Commit title"
-              />
+              <div className="relative">
+                <input
+                  type="text"
+                  value={commitTitle}
+                  onChange={(e) => setCommitTitle(e.target.value)}
+                  className="w-full bg-transparent border border-border px-3 py-2 pr-8 text-sm font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:border-foreground/20 focus:ring-[3px] focus:ring-ring/50 transition-colors rounded-md"
+                  placeholder="Commit title"
+                />
+                <button
+                  type="button"
+                  onClick={generateCommitMessage}
+                  disabled={isGenerating}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-muted-foreground/40 hover:text-foreground/70 transition-colors cursor-pointer disabled:cursor-wait"
+                  title="Generate with AI"
+                >
+                  <Sparkles className={cn("w-3.5 h-3.5", isGenerating && "animate-pulse text-foreground/50")} />
+                </button>
+              </div>
             </div>
             <div>
               <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground block mb-1.5">
