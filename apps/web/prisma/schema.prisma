@@ -116,13 +116,14 @@ model GithubSyncJob {
 }
 
 model ChatConversation {
-  id         String  @id
-  userId     String
-  chatType   String
-  contextKey String
-  title      String?
-  createdAt  String
-  updatedAt  String
+  id             String  @id
+  userId         String
+  chatType       String
+  contextKey     String
+  title          String?
+  activeStreamId String?
+  createdAt      String
+  updatedAt      String
 
   messages ChatMessage[]
 
@@ -132,10 +133,11 @@ model ChatConversation {
 }
 
 model ChatMessage {
-  id             String @id
+  id             String  @id
   conversationId String
   role           String
   content        String
+  partsJson      String?
   createdAt      String
 
   conversation ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)

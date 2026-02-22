@@ -583,7 +583,13 @@ export function AIChat({
 	const contextBodyRef = useRef(contextBody);
 	contextBodyRef.current = contextBody;
 
-	// Only recreate transport when the API endpoint changes.
+	// Keep refs for persistKey/chatType so the transport callbacks always read latest values
+	const persistKeyRef = useRef(persistKey);
+	persistKeyRef.current = persistKey;
+	const chatTypeRef = useRef(chatType);
+	chatTypeRef.current = chatType;
+
+	// Only recreate transport when the API endpoint or persistKey changes.
 	// The body function reads from contextBodyRef, so it always returns the latest
 	// value without needing to recreate the transport. Recreating mid-stream
 	// (e.g. when contexts are cleared after send, or pathname changes during
@@ -593,12 +599,33 @@ export function AIChat({
 			new DefaultChatTransport({
 				api: apiEndpoint,
 				body: () => contextBodyRef.current,
+				prepareSendMessagesRequest: ({ id, messages, body, trigger, messageId }) => {
+					return {
+						body: {
+							...body,
+							id,
+							messages,
+							trigger,
+							messageId,
+							persistKey: persistKeyRef.current,
+							chatType: chatTypeRef.current,
+						},
+					};
+				},
+				...(persistKey
+					? {
+							prepareReconnectToStreamRequest: ({ id }) => ({
+								api: `/api/ai/ghost/${id}/stream`,
+							}),
+						}
+					: {}),
 			}),
-		[apiEndpoint],
+		[apiEndpoint, persistKey],
 	);
 
 	const { messages, sendMessage, setMessages, status, stop, error, clearError, regenerate } =
 		useChat({
+			...(persistKey ? { id: persistKey, resume: true } : {}),
 			transport,
 		});
 
@@ -613,6 +640,7 @@ export function AIChat({
 		setHistoryLoaded(false);
 		// Clear immediately so stale messages from a previous tab don't flash
 		setMessages([]);
+		clearError();
 		setConversationId(null);
 		setMessageContexts({});
 		pendingContextsRef.current = null;
@@ -634,17 +662,33 @@ export function AIChat({
 							id: string;
 							role: "user" | "assistant" | "system";
 							content: string;
-						}) => ({
-							id: m.id,
-							role: m.role,
-							content: m.content,
-							parts: [
-								{
-									type: "text" as const,
-									text: m.content,
-								},
-							],
-						}),
+							partsJson?: string | null;
+						}) => {
+							if (m.partsJson) {
+								try {
+									const parts = JSON.parse(m.partsJson);
+									return {
+										id: m.id,
+										role: m.role,
+										content: m.content,
+										parts,
+									};
+								} catch {
+									// fall through to text-only
+								}
+							}
+							return {
+								id: m.id,
+								role: m.role,
+								content: m.content,
+								parts: [
+									{
+										type: "text" as const,
+										text: m.content,
+									},
+								],
+							};
+						},
 					);
 					setMessages(uiMessages);
 					initialMessageCountRef.current = uiMessages.length;
@@ -681,7 +725,6 @@ export function AIChat({
 					?.filter((p) => p.type === "text")
 					.map((p) => (p as { type: "text"; text: string }).text)
 					.join("") || "";
-			if (!text) continue;
 
 			fetch("/api/ai/chat-history", {
 				method: "POST",
@@ -689,7 +732,12 @@ export function AIChat({
 				body: JSON.stringify({
 					contextKey: persistKey,
 					chatType,
-					message: { id: msg.id, role: msg.role, content: text },
+					message: {
+						id: msg.id,
+						role: msg.role,
+						content: text,
+						partsJson: JSON.stringify(msg.parts),
+					},
 				}),
 			})
 				.then((res) => res.json())
@@ -1127,7 +1175,7 @@ export function AIChat({
 					)}
 				/>
 				<div ref={scrollRef} className="h-full overflow-y-auto px-3 py-3">
-					{messages.length === 0 && !isLoading ? (
+					{messages.length === 0 && !isLoading && historyLoaded ? (
 						<div className="flex flex-col items-center justify-center h-full text-center gap-3">
 							<Ghost className="size-6 text-muted-foreground/40" />
 							<div>
@@ -1383,7 +1431,7 @@ export function AIChat({
 							)}
 
 							{/* Error state — stream died, timed out, etc. */}
-							{error && (
+							{error && historyLoaded && (
 								<div className="flex flex-col items-center gap-2 py-4">
 									<Ghost className="w-5 h-5 text-muted-foreground/20" />
 									<span className="text-[11px] text-muted-foreground/50">

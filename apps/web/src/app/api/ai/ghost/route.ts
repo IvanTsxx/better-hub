@@ -1,8 +1,14 @@
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import type { UIMessage } from "ai";
-import { convertToModelMessages, stepCountIs, streamText, tool } from "ai";
+import { convertToModelMessages, generateId, stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
 import { getOctokitFromSession, getGitHubToken } from "@/lib/ai-auth";
+import {
+	getOrCreateConversation,
+	updateActiveStreamId,
+	saveMessages as saveMessagesToDb,
+} from "@/lib/chat-store";
+import { streamContext } from "@/lib/resumable-stream";
 import type { Octokit } from "@octokit/rest";
 import { Sandbox } from "e2b";
 import { auth } from "@/lib/auth";
@@ -3026,6 +3032,9 @@ The sandbox has git, node, npm, python, and common dev tools.
 
 export async function POST(req: Request) {
 	const {
+		id: chatId,
+		persistKey,
+		chatType: persistChatType,
 		messages,
 		prContext,
 		issueContext,
@@ -3033,6 +3042,9 @@ export async function POST(req: Request) {
 		pageContext,
 		activeFile,
 	}: {
+		id?: string;
+		persistKey?: string;
+		chatType?: string;
 		messages: UIMessage[];
 		prContext?: PRContext;
 		issueContext?: IssueContext;
@@ -3347,6 +3359,19 @@ export async function POST(req: Request) {
 		// Network error validating key — proceed anyway
 	}
 
+	// Resolve conversation for persistence (if configured)
+	let conversationId: string | null = null;
+	if (persistKey && persistChatType && userId) {
+		try {
+			const conv = await getOrCreateConversation(userId, persistChatType, persistKey);
+			conversationId = conv.id;
+			// Clear any stale stream ID
+			await updateActiveStreamId(conversationId, null);
+		} catch {
+			// Persistence failure should not block the stream
+		}
+	}
+
 	try {
 		const result = streamText({
 			model: createOpenRouter({ apiKey })(modelId),
@@ -3357,6 +3382,42 @@ export async function POST(req: Request) {
 			stopWhen: stepCountIs(50),
 			onError() {},
 		});
+
+		if (conversationId) {
+			const convId = conversationId;
+			return result.toUIMessageStreamResponse({
+				sendReasoning: true,
+				originalMessages: messages,
+				generateMessageId: generateId,
+				async consumeSseStream({ stream }) {
+					const streamId = generateId();
+					await streamContext.createNewResumableStream(streamId, () => stream);
+					await updateActiveStreamId(convId, streamId).catch(() => {});
+				},
+				onFinish: async ({ messages: finishedMessages }) => {
+					try {
+						// Persist all messages server-side with full parts
+						const toSave = finishedMessages.map((m) => ({
+							id: m.id,
+							role: m.role,
+							content:
+								m.parts
+									?.filter(
+										(p): p is Extract<typeof p, { type: "text" }> =>
+											p.type === "text",
+									)
+									.map((p) => p.text)
+									.join("") || "",
+							partsJson: JSON.stringify(m.parts),
+						}));
+						await saveMessagesToDb(convId, toSave);
+					} catch {
+						// Best-effort persistence
+					}
+					await updateActiveStreamId(convId, null).catch(() => {});
+				},
+			});
+		}
 
 		return result.toUIMessageStreamResponse({
 			sendReasoning: true,
