@@ -2968,6 +2968,14 @@ export async function invalidateRepoPullRequestsCache(owner: string, repo: strin
 	await deleteGithubCacheByPrefix(authCtx.userId, prefix);
 }
 
+export async function invalidateAllPRBundlesForRepo(owner: string, repo: string) {
+	const authCtx = await getGitHubAuthContext();
+	if (!authCtx) return;
+	const key = normalizeRepoKey(owner, repo);
+	await deleteGithubCacheByPrefix(authCtx.userId, `pr_bundle:${key}`);
+	await deleteGithubCacheByPrefix(authCtx.userId, `pull_request:${key}`);
+}
+
 export async function invalidatePullRequestCache(owner: string, repo: string, pullNumber: number) {
 	const authCtx = await getGitHubAuthContext();
 	if (!authCtx) return;

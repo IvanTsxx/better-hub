@@ -3,6 +3,9 @@ import type { UIMessage } from "ai";
 import { convertToModelMessages, stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
 import { getOctokitFromSession } from "@/lib/ai-auth";
+import { auth } from "@/lib/auth";
+import { headers } from "next/headers";
+import { checkAiLimit, incrementAiUsage } from "@/lib/ai-usage";
 
 export const maxDuration = 60;
 
@@ -27,6 +30,20 @@ export async function POST(req: Request) {
 	const octokit = await getOctokitFromSession();
 	if (!octokit) {
 		return new Response("Unauthorized", { status: 401 });
+	}
+
+	// Check AI message limit
+	const session = await auth.api.getSession({ headers: await headers() });
+	const userId = session?.user?.id;
+	if (userId) {
+		const { allowed, current, limit } = await checkAiLimit(userId);
+		if (!allowed) {
+			return new Response(
+				JSON.stringify({ error: "MESSAGE_LIMIT_REACHED", current, limit }),
+				{ status: 429, headers: { "Content-Type": "application/json" } },
+			);
+		}
+		await incrementAiUsage(userId);
 	}
 
 	// Get authenticated user info

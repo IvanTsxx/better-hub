@@ -5,6 +5,7 @@ import {
 	getGitHubToken,
 	getAuthenticatedUser,
 	invalidatePullRequestCache,
+	invalidateAllPRBundlesForRepo,
 	getRepoBranches,
 } from "@/lib/github";
 import { getErrorMessage } from "@/lib/utils";
@@ -39,6 +40,12 @@ async function revalidateAfterPRMutation(
 	const scopes = PR_ACTION_SCOPES[action] ?? ["detail"];
 	await invalidatePullRequestCache(owner, repo, pullNumber);
 	invalidateRepoCache(owner, repo);
+	// When a PR is merged, the base branch changes — other open PRs targeting
+	// the same base may now have new merge conflicts. Invalidate all PR bundle
+	// caches so their mergeable status is refetched.
+	if (action === "merge") {
+		await invalidateAllPRBundlesForRepo(owner, repo);
+	}
 	if (scopes.includes("detail")) {
 		revalidatePath(`/repos/${owner}/${repo}/pulls/${pullNumber}`);
 	}

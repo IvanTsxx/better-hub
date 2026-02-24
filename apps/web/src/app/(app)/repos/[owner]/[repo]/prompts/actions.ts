@@ -36,6 +36,24 @@ export async function acceptPromptRequest(id: string) {
 	await updatePromptRequestStatus(id, "processing");
 	revalidatePath(`/repos/${pr.owner}/${pr.repo}/prompts`);
 	revalidatePath(`/repos/${pr.owner}/${pr.repo}/prompts/${id}`);
+
+	// Fire-and-forget: kick off the background processor.
+	// Forward the user's cookies so the route handler can authenticate.
+	const reqHeaders = await headers();
+	const cookie = reqHeaders.get("cookie") ?? "";
+	const origin = reqHeaders.get("origin") || reqHeaders.get("x-forwarded-host") || "http://localhost:3000";
+	const baseUrl = origin.startsWith("http") ? origin : `https://${origin}`;
+	fetch(`${baseUrl}/api/ai/prompt-process`, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+			cookie,
+		},
+		body: JSON.stringify({ promptRequestId: id }),
+	}).catch(() => {
+		// If the trigger fails, the prompt stays in "processing" state.
+		// The user can reset it from the UI.
+	});
 }
 
 export async function rejectPromptRequest(id: string) {

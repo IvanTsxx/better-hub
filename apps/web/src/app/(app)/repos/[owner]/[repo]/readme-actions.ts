@@ -35,6 +35,26 @@ export async function revalidateReadme(
 	}
 }
 
+export async function fetchReadmeMarkdown(
+	owner: string,
+	repo: string,
+	branch: string,
+): Promise<string | null> {
+	const octokit = await getOctokit();
+	if (!octokit) return null;
+
+	try {
+		const { data } = await octokit.repos.getReadme({
+			owner,
+			repo,
+			ref: branch,
+		});
+		return Buffer.from(data.content, "base64").toString("utf-8");
+	} catch {
+		return null;
+	}
+}
+
 export async function revalidateLanguages(
 	owner: string,
 	repo: string,

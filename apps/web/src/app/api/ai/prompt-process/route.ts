@@ -352,9 +352,14 @@ function buildSandboxTools(
 				}
 
 				try {
-					sandbox = await Sandbox.create({
-						timeoutMs: 10 * 60 * 1000,
-					});
+					const e2bTemplate = process.env.E2B_TEMPLATE;
+					sandbox = e2bTemplate
+						? await Sandbox.create(e2bTemplate, {
+								timeoutMs: 30 * 60 * 1000,
+							})
+						: await Sandbox.create({
+								timeoutMs: 30 * 60 * 1000,
+							});
 				} catch (e: any) {
 					sandbox = null;
 					return { error: `Sandbox creation failed: ${e.message}` };
@@ -367,10 +372,10 @@ function buildSandboxTools(
 					);
 
 					repoPath = `/home/user/${repo}`;
-					// Clone with token auth
+					// Clone with token auth – shallow clone to save time/disk
 					await sandbox.commands.run(
-						`git clone ${branch ? `-b ${branch}` : ""} https://x-access-token:${githubToken}@github.com/${owner}/${repo}.git ${repoPath}`,
-						{ timeoutMs: 120_000 },
+						`git clone --depth 1 ${branch ? `-b ${branch}` : ""} https://x-access-token:${githubToken}@github.com/${owner}/${repo}.git ${repoPath}`,
+						{ timeoutMs: 300_000 },
 					);
 
 					const infoResult = await sandbox.commands.run(
@@ -399,7 +404,7 @@ function buildSandboxTools(
 					.number()
 					.optional()
 					.describe(
-						"Timeout in seconds (default 120, use 300 for installs/builds)",
+						"Timeout in seconds (default 300, use 600 for large installs/builds)",
 					),
 			}),
 			execute: async ({ command, timeout }) => {
@@ -409,7 +414,7 @@ function buildSandboxTools(
 					};
 				const result = await sandbox.commands.run(command, {
 					cwd: repoPath,
-					timeoutMs: (timeout ?? 120) * 1000,
+					timeoutMs: (timeout ?? 300) * 1000,
 				});
 				const output =
 					result.stdout + (result.stderr ? `\n${result.stderr}` : "");
@@ -420,6 +425,40 @@ function buildSandboxTools(
 							output.slice(-maxLen)
 						: output;
 				return { exitCode: result.exitCode, stdout };
+			},
+		}),
+
+		sandboxPreview: tool({
+			description:
+				"Start a dev server in the background and return a public preview URL. Use after installing deps.",
+			inputSchema: z.object({
+				command: z
+					.string()
+					.describe("Dev server command (e.g. 'npm run dev -- --port 3000')"),
+				port: z
+					.number()
+					.describe("Port the dev server listens on (e.g. 3000, 5173, 8080)"),
+			}),
+			execute: async ({ command, port }) => {
+				if (!sandbox || !repoPath)
+					return { error: "No sandbox running. Call startSandbox first." };
+				try {
+					await sandbox.commands.run(command, {
+						background: true,
+						cwd: repoPath,
+					});
+					await new Promise((r) => setTimeout(r, 3000));
+					const host = sandbox.getHost(port);
+					return {
+						success: true,
+						previewUrl: `https://${host}`,
+						port,
+					};
+				} catch (e: unknown) {
+					return {
+						error: (e instanceof Error ? e.message : null) || "Failed to start dev server",
+					};
+				}
 			},
 		}),
 

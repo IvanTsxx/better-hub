@@ -3,12 +3,23 @@ import { generateText } from "ai";
 import { auth } from "@/lib/auth";
 import { getErrorMessage } from "@/lib/utils";
 import { headers } from "next/headers";
+import { checkAiLimit, incrementAiUsage } from "@/lib/ai-usage";
 
 export async function POST(req: Request) {
 	const session = await auth.api.getSession({ headers: await headers() });
 	if (!session?.user?.id) {
 		return new Response("Unauthorized", { status: 401 });
 	}
+
+	// Check AI message limit
+	const { allowed, current, limit } = await checkAiLimit(session.user.id);
+	if (!allowed) {
+		return new Response(
+			JSON.stringify({ error: "MESSAGE_LIMIT_REACHED", current, limit }),
+			{ status: 429, headers: { "Content-Type": "application/json" } },
+		);
+	}
+	await incrementAiUsage(session.user.id);
 
 	const body = await req.json();
 	const model = anthropic("claude-haiku-4-5-20251001");

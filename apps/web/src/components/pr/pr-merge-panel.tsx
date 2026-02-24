@@ -176,8 +176,9 @@ export function PRMergePanel({
 		}
 	}, [result]);
 
-	const invalidatePRListQueries = useCallback(() => {
+	const invalidatePRQueries = useCallback(() => {
 		queryClient.removeQueries({ queryKey: ["prs", owner, repo] });
+		queryClient.removeQueries({ queryKey: ["pr-check-statuses", owner, repo] });
 	}, [queryClient, owner, repo]);
 
 	const doMerge = (mergeMethod: MergeMethod, title?: string, message?: string) => {
@@ -197,7 +198,7 @@ export function PRMergePanel({
 			} else {
 				setResult({ type: "success", message: "Merged" });
 				emit({ type: "pr:merged", owner, repo, number: pullNumber });
-				invalidatePRListQueries();
+				invalidatePRQueries();
 				setSquashDialogOpen(false);
 				setIsMerged(true);
 				router.refresh();
@@ -229,7 +230,7 @@ export function PRMergePanel({
 			} else {
 				setResult({ type: "success", message: "Closed" });
 				emit({ type: "pr:closed", owner, repo, number: pullNumber });
-				invalidatePRListQueries();
+				invalidatePRQueries();
 				router.refresh();
 			}
 		});
@@ -245,7 +246,7 @@ export function PRMergePanel({
 			} else {
 				setResult({ type: "success", message: "Reopened" });
 				emit({ type: "pr:reopened", owner, repo, number: pullNumber });
-				invalidatePRListQueries();
+				invalidatePRQueries();
 				router.refresh();
 			}
 		});
@@ -498,6 +499,30 @@ export function PRMergePanel({
 							commit.
 						</DialogDescription>
 					</DialogHeader>
+					{mergeable === false && (
+						<div className="flex items-center gap-2.5 px-3 py-2.5 border border-amber-500/30 bg-amber-500/5 rounded-md">
+							<GitMerge className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+							<div className="flex-1 min-w-0">
+								<p className="text-xs font-medium text-amber-600 dark:text-amber-400">
+									This branch has merge conflicts
+								</p>
+								<p className="text-[11px] text-muted-foreground mt-0.5">
+									Resolve conflicts before merging, or let Ghost fix them.
+								</p>
+							</div>
+							<button
+								type="button"
+								onClick={() => {
+									setSquashDialogOpen(false);
+									handleFixWithGhost();
+								}}
+								className="flex items-center gap-1 px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 transition-colors cursor-pointer rounded shrink-0"
+							>
+								<Ghost className="w-3 h-3" />
+								Fix
+							</button>
+						</div>
+					)}
 					<div className="space-y-3">
 						<div>
 							<label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground block mb-1.5">
@@ -565,8 +590,13 @@ export function PRMergePanel({
 						</button>
 						<button
 							onClick={handleSquashConfirm}
-							disabled={isPending || !commitTitle.trim()}
-							className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider bg-foreground text-background hover:bg-foreground/90 border border-foreground/80 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+							disabled={isPending || !commitTitle.trim() || mergeable === false}
+							className={cn(
+								"flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+								mergeable === false
+									? "bg-amber-500/80 text-background border border-amber-500/40 cursor-not-allowed"
+									: "bg-foreground text-background hover:bg-foreground/90 border border-foreground/80 cursor-pointer",
+							)}
 						>
 							{isPending ? (
 								<Loader2 className="w-3 h-3 animate-spin" />

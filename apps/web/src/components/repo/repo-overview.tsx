@@ -28,6 +28,8 @@ import { useMutationEvents } from "@/components/shared/mutation-event-provider";
 import { isRepoEvent, type MutationEvent } from "@/lib/mutation-events";
 import { useReadme } from "@/hooks/use-readme";
 import { MarkdownCopyHandler } from "@/components/shared/markdown-copy-handler";
+import { ReadmeToolbar } from "@/components/repo/readme-toolbar";
+import { fetchReadmeMarkdown } from "@/app/(app)/repos/[owner]/[repo]/readme-actions";
 import {
 	fetchOverviewPRs,
 	fetchOverviewIssues,
@@ -1068,6 +1070,14 @@ export function RepoOverview({
 		<div className="space-y-4 pb-4">
 			{readmeHtml && (
 				<div className="rounded-md border border-border/40 overflow-hidden">
+					<div className="flex items-center justify-end px-4 py-1.5 border-b border-border/30">
+						<ReadmeToolbar
+							owner={owner}
+							repo={repo}
+							branch={branch}
+							fetchMarkdown={fetchReadmeMarkdown}
+						/>
+					</div>
 					<div className="px-6 py-5">
 						<MarkdownCopyHandler>
 							<div

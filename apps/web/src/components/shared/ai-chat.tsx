@@ -784,6 +784,7 @@ export function AIChat({
 	const [welcomeLoading, setWelcomeLoading] = useState(false);
 	const isStreaming = status === "streaming";
 	const isLoading = status === "submitted" || isStreaming || welcomeLoading;
+	const isLimitReached = !!error?.message?.includes("MESSAGE_LIMIT_REACHED");
 	const router = useRouter();
 
 	// Report working status to global context (only from the active tab)
@@ -943,7 +944,7 @@ export function AIChat({
 
 	const handleSend = (text?: string) => {
 		const msg = (text || input).trim();
-		if (!msg || isLoading) return;
+		if (!msg || isLoading || isLimitReached) return;
 		// Re-enable auto-scroll when user sends a message
 		isUserScrolledUp.current = false;
 		// Snapshot attached contexts before sending
@@ -1448,21 +1449,34 @@ export function AIChat({
 							{error && historyLoaded && (
 								<div className="flex flex-col items-center gap-2 py-4">
 									<Ghost className="w-5 h-5 text-muted-foreground/20" />
-									<span className="text-[11px] text-muted-foreground/50">
-										Ghost got lost in
-										the void
-									</span>
-									<button
-										type="button"
-										onClick={() => {
-											clearError();
-											regenerate();
-										}}
-										className="mt-1 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[11px] font-medium bg-foreground text-background hover:bg-foreground/85 transition-colors cursor-pointer"
-									>
-										<RotateCcw className="w-3 h-3" />
-										Summon again
-									</button>
+									{error.message?.includes("MESSAGE_LIMIT_REACHED") ? (
+										<>
+											<span className="text-[11px] text-muted-foreground/50 text-center max-w-[260px]">
+												You&apos;ve used all 20 free AI messages. Billing is coming soon.
+											</span>
+											<span className="text-[10px] text-muted-foreground/35 text-center max-w-[240px]">
+												You can add your own OpenRouter API key in Settings to continue using AI features.
+											</span>
+										</>
+									) : (
+										<>
+											<span className="text-[11px] text-muted-foreground/50">
+												Ghost got lost in
+												the void
+											</span>
+											<button
+												type="button"
+												onClick={() => {
+													clearError();
+													regenerate();
+												}}
+												className="mt-1 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[11px] font-medium bg-foreground text-background hover:bg-foreground/85 transition-colors cursor-pointer"
+											>
+												<RotateCcw className="w-3 h-3" />
+												Summon again
+											</button>
+										</>
+									)}
 								</div>
 							)}
 						</div>
@@ -1806,7 +1820,8 @@ export function AIChat({
 									)
 								}
 								onKeyDown={onKeyDown}
-								placeholder={placeholder}
+								placeholder={isLimitReached ? "Message limit reached" : placeholder}
+								disabled={isLimitReached}
 								suppressHydrationWarning
 								rows={1}
 								className={cn(
@@ -1835,11 +1850,11 @@ export function AIChat({
 											handleSend()
 										}
 										disabled={
-											!input.trim()
+											!input.trim() || isLimitReached
 										}
 										className={cn(
 											"inline-flex h-7 w-7 items-center justify-center rounded-full transition-all duration-150",
-											input.trim()
+											input.trim() && !isLimitReached
 												? "bg-foreground text-background hover:bg-foreground/90 cursor-pointer"
 												: "bg-muted/50 dark:bg-white/5 text-muted-foreground/25 cursor-default",
 										)}

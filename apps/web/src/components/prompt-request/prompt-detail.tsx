@@ -248,7 +248,8 @@ export function PromptDetail({
 			await acceptPromptRequest(promptRequest.id);
 			emit({ type: "prompt:accepted", owner, repo });
 			router.refresh();
-			openGhostWithPrompt();
+			// Background processor is triggered by the server action.
+			// The UI will poll for progress updates automatically.
 		} catch (e: unknown) {
 			setError(getErrorMessage(e) || "Failed to accept");
 			setIsAccepting(false);

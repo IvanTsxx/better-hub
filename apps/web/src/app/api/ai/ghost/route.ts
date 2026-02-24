@@ -18,6 +18,7 @@ import { rerankResults } from "@/lib/mixedbread";
 import { searchEmbeddings, type ContentType } from "@/lib/embedding-store";
 import { toAppUrl } from "@/lib/github-utils";
 import { getUserSettings } from "@/lib/user-settings-store";
+import { checkAiLimit, incrementAiUsage } from "@/lib/ai-usage";
 import {
 	createPromptRequest as createPromptRequestInDb,
 	updatePromptRequestStatus,
@@ -2116,6 +2117,11 @@ const SANDBOX_PROMPT = `## Cloud Sandbox
 Use ONLY for running commands (tests, builds, linters). Workflow: startSandbox → sandboxRun → killSandbox. To commit sandbox changes: sandboxReadFile → stageFile + commitChanges.
 Do NOT use sandbox for file reads/writes or commits — use API tools instead. Only install deps when you need to run code.
 
+## Preview / Dev Server
+To give the user a live preview URL: startSandbox → sandboxRun (install deps) → sandboxPreview (start dev server + get URL).
+sandboxPreview runs the server in the background and returns a public https:// URL the user can open in their browser.
+Common ports: Next.js/CRA=3000, Vite=5173, Astro=4321. Make sure to pass the correct port.
+
 ## Merge Conflicts
 Use getMergeConflictInfo → commitMergeResolution (API-based). For complex git ops (cherry-pick, rebase, bisect), use the sandbox.`;
 
@@ -2756,9 +2762,14 @@ The sandbox has git, node, npm, python, and common dev tools.
 				}
 
 				try {
-					sandbox = await Sandbox.create({
-						timeoutMs: 10 * 60 * 1000, // 10 minutes
-					});
+					const e2bTemplate = process.env.E2B_TEMPLATE;
+					sandbox = e2bTemplate
+						? await Sandbox.create(e2bTemplate, {
+								timeoutMs: 30 * 60 * 1000,
+							})
+						: await Sandbox.create({
+								timeoutMs: 30 * 60 * 1000,
+							});
 				} catch (e: unknown) {
 					sandbox = null;
 					return {
@@ -2776,10 +2787,10 @@ The sandbox has git, node, npm, python, and common dev tools.
 					repoOwner = owner;
 					repoName = repo;
 
-					// Clone with token auth
+					// Clone with token auth – shallow clone to save time/disk
 					await sandbox.commands.run(
-						`git clone ${branch ? `-b ${branch}` : ""} https://x-access-token:${githubToken}@github.com/${owner}/${repo}.git ${repoPath}`,
-						{ timeoutMs: 120_000 },
+						`git clone --depth 1 ${branch ? `-b ${branch}` : ""} https://x-access-token:${githubToken}@github.com/${owner}/${repo}.git ${repoPath}`,
+						{ timeoutMs: 300_000 },
 					);
 				} catch (e: unknown) {
 					if (sandbox) await sandbox.kill().catch(() => {});
@@ -2814,14 +2825,13 @@ The sandbox has git, node, npm, python, and common dev tools.
 					let installHint = "npm install";
 					if (hasPnpm) {
 						packageManager = "pnpm";
-						installHint = "npm install -g pnpm && pnpm install";
+						installHint = "pnpm install --frozen-lockfile";
 					} else if (hasYarn) {
 						packageManager = "yarn";
-						installHint = "yarn install";
+						installHint = "yarn install --frozen-lockfile";
 					} else if (hasBun) {
 						packageManager = "bun";
-						installHint =
-							'curl -fsSL https://bun.sh/install | bash && export PATH="$HOME/.bun/bin:$PATH" && bun install';
+						installHint = "bun install --frozen-lockfile";
 					}
 
 					let scripts: Record<string, string> = {};
@@ -2892,7 +2902,7 @@ The sandbox has git, node, npm, python, and common dev tools.
 					.number()
 					.optional()
 					.describe(
-						"Timeout in seconds (default 120, use 300 for installs/builds)",
+						"Timeout in seconds (default 300, use 600 for large installs/builds)",
 					),
 			}),
 			execute: async ({ command, cwd, timeout }) => {
@@ -2903,7 +2913,7 @@ The sandbox has git, node, npm, python, and common dev tools.
 				try {
 					const result = await sandbox.commands.run(command, {
 						cwd: cwd || repoPath || undefined,
-						timeoutMs: (timeout ?? 120) * 1000,
+						timeoutMs: (timeout ?? 300) * 1000,
 					});
 					// Truncate large output — keep the tail where errors usually appear
 					const maxLen = 8000;
@@ -2931,6 +2941,61 @@ The sandbox has git, node, npm, python, and common dev tools.
 						error:
 							(e instanceof Error ? e.message : null) ||
 							"Command failed",
+					};
+				}
+			},
+		}),
+
+		sandboxPreview: tool({
+			description:
+				"Start a dev server in the background and return a public preview URL. Use after installing deps. Common commands: 'npm run dev', 'pnpm dev', 'yarn dev'. The command must start a long-running server process (not a build). Returns a public URL you can share with the user.",
+			inputSchema: z.object({
+				command: z
+					.string()
+					.describe(
+						"Dev server command (e.g. 'npm run dev -- --port 3000')",
+					),
+				port: z
+					.number()
+					.describe(
+						"Port the dev server listens on (e.g. 3000, 5173, 8080)",
+					),
+				cwd: z
+					.string()
+					.optional()
+					.describe("Working directory (defaults to repo root)"),
+			}),
+			execute: async ({ command, port, cwd }) => {
+				if (!sandbox)
+					return {
+						error: "No sandbox running. Use startSandbox first.",
+					};
+				try {
+					// Start the dev server in the background
+					const handle = await sandbox.commands.run(command, {
+						background: true,
+						cwd: cwd || repoPath || undefined,
+					});
+
+					// Give the server a moment to boot
+					await new Promise((r) => setTimeout(r, 3000));
+
+					// Get the public URL for this port
+					const host = sandbox.getHost(port);
+					const previewUrl = `https://${host}`;
+
+					return {
+						success: true,
+						previewUrl,
+						port,
+						pid: handle.pid,
+						message: `Dev server started. Preview available at: ${previewUrl}`,
+					};
+				} catch (e: unknown) {
+					return {
+						error:
+							(e instanceof Error ? e.message : null) ||
+							"Failed to start dev server",
 					};
 				}
 			},
@@ -3067,6 +3132,20 @@ export async function POST(req: Request) {
 	// Extract userId and commit author info
 	const session = await auth.api.getSession({ headers: await headers() });
 	const userId = session?.user?.id;
+
+	// Check AI message limit for free users
+	if (userId) {
+		const { allowed, current, limit } = await checkAiLimit(userId);
+		if (!allowed) {
+			return new Response(
+				JSON.stringify({ error: "MESSAGE_LIMIT_REACHED", current, limit }),
+				{ status: 429, headers: { "Content-Type": "application/json" } },
+			);
+		}
+		// Increment on request start (before streaming) to prevent gaming by canceling
+		await incrementAiUsage(userId);
+	}
+
 	let commitAuthor: CommitAuthor | undefined;
 	if (session?.user) {
 		const u = session.user;
