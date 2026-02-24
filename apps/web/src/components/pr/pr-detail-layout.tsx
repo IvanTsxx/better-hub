@@ -4,6 +4,10 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { Code2, MessageCircle, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ResizeHandle } from "@/components/ui/resize-handle";
+import {
+	PROptimisticCommentsProvider,
+	PROptimisticCommentsDisplay,
+} from "./pr-optimistic-comments-provider";
 
 type MobileTab = "diff" | "chat";
 
@@ -95,6 +99,7 @@ export function PRDetailLayout({
 	}
 
 	return (
+		<PROptimisticCommentsProvider serverCommentCount={commentCount}>
 		<div className="flex-1 min-h-0 flex flex-col">
 			{/* Compact PR info bar */}
 			<div className="shrink-0 px-4 pt-3">{infoBar}</div>
@@ -231,6 +236,7 @@ export function PRDetailLayout({
 							</div>
 							<div className="flex-1 overflow-y-auto overscroll-contain min-h-0 px-3 pb-3">
 								{conversationPanel}
+								<PROptimisticCommentsDisplay />
 							</div>
 							{commentForm && (
 								<div className="shrink-0 px-3 pb-3 pt-3">
@@ -260,6 +266,7 @@ export function PRDetailLayout({
 				>
 					<div className="flex-1 overflow-y-auto overscroll-contain min-h-0 px-3 pb-3">
 						{conversationPanel}
+						<PROptimisticCommentsDisplay />
 					</div>
 					{commentForm && (
 						<div className="shrink-0 px-3 pb-3 pt-3">
@@ -269,5 +276,6 @@ export function PRDetailLayout({
 				</div>
 			</div>
 		</div>
+		</PROptimisticCommentsProvider>
 	);
 }

@@ -100,6 +100,7 @@ export function PRMergePanel({
 	const [commitTitle, setCommitTitle] = useState("");
 	const [commitMessage, setCommitMessage] = useState("");
 	const [isPending, startTransition] = useTransition();
+	const [pendingAction, setPendingAction] = useState<"merge" | "close" | "reopen" | null>(null);
 	const [result, setResult] = useState<{ type: "success" | "error"; message: string } | null>(
 		null,
 	);
@@ -181,6 +182,7 @@ export function PRMergePanel({
 
 	const doMerge = (mergeMethod: MergeMethod, title?: string, message?: string) => {
 		setResult(null);
+		setPendingAction("merge");
 		startTransition(async () => {
 			const res = await mergePullRequest(
 				owner,
@@ -219,6 +221,7 @@ export function PRMergePanel({
 
 	const handleClose = () => {
 		setResult(null);
+		setPendingAction("close");
 		startTransition(async () => {
 			const res = await closePullRequest(owner, repo, pullNumber);
 			if (res.error) {
@@ -234,6 +237,7 @@ export function PRMergePanel({
 
 	const handleReopen = () => {
 		setResult(null);
+		setPendingAction("reopen");
 		startTransition(async () => {
 			const res = await reopenPullRequest(owner, repo, pullNumber);
 			if (res.error) {
@@ -270,7 +274,7 @@ export function PRMergePanel({
 					disabled={isPending}
 					className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider border border-border text-muted-foreground hover:text-foreground hover:bg-muted/60 dark:hover:bg-white/3 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
 				>
-					{isPending ? (
+					{isPending && pendingAction === "reopen" ? (
 						<Loader2 className="w-3 h-3 animate-spin" />
 					) : (
 						<RotateCcw className="w-3 h-3" />
@@ -332,7 +336,7 @@ export function PRMergePanel({
 										: undefined
 								}
 							>
-								{isPending ? (
+								{isPending && pendingAction === "merge" ? (
 									<Loader2 className="w-3 h-3 animate-spin" />
 								) : mergeable === false ? (
 									<>
@@ -472,7 +476,11 @@ export function PRMergePanel({
 						disabled={isPending}
 						className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider border border-red-300/40 dark:border-red-500/20 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
 					>
-						<XCircle className="w-3 h-3" />
+						{isPending && pendingAction === "close" ? (
+							<Loader2 className="w-3 h-3 animate-spin" />
+						) : (
+							<XCircle className="w-3 h-3" />
+						)}
 						Close
 					</button>
 				)}
