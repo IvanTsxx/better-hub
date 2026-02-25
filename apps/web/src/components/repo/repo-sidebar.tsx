@@ -15,6 +15,7 @@ import { TimeAgo } from "@/components/ui/time-ago";
 import { formatBytes } from "@/lib/github-utils";
 import { StarButton } from "@/components/repo/star-button";
 import { ForkButton } from "@/components/repo/fork-button";
+import { PinButton } from "@/components/repo/pin-button";
 import { SidebarLanguages } from "@/components/repo/sidebar-languages";
 import { SidebarContributors } from "@/components/repo/sidebar-contributors";
 
@@ -188,6 +189,15 @@ export function RepoSidebar({
 						repo={repoName}
 						starred={isStarred}
 						starCount={stars}
+					/>
+
+					<PinButton
+						owner={owner}
+						repo={repoName}
+						language={language}
+						stargazers_count={stars}
+						isPrivate={isPrivate}
+						avatarUrl={avatarUrl}
 					/>
 					<ForkButton
 						owner={owner}

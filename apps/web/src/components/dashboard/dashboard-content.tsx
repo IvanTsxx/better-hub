@@ -1,7 +1,7 @@
 "use client";
 
 import { noSSR } from "foxact/no-ssr";
-import { Suspense, useEffect, useState, useCallback, useTransition } from "react";
+import { Suspense, useEffect, useState, useCallback, useTransition, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
@@ -25,6 +25,8 @@ import {
 	Lightbulb,
 	Check,
 	Loader2,
+	Pin,
+	PinOff,
 } from "lucide-react";
 import { cn, formatNumber } from "@/lib/utils";
 import { TimeAgo } from "@/components/ui/time-ago";
@@ -32,6 +34,7 @@ import { toInternalUrl, getLanguageColor } from "@/lib/github-utils";
 import { RecentlyViewed } from "./recently-viewed";
 import { CreateRepoDialog } from "@/components/repo/create-repo-dialog";
 import { markNotificationDone } from "@/app/(app)/repos/actions";
+import { getPinnedRepos, togglePinRepo, unpinRepo, type PinnedRepo } from "@/lib/pinned-repos";
 import type {
 	IssueItem,
 	RepoItem,
@@ -435,11 +438,57 @@ function ReposTabs({
 	repos: Array<RepoItem>;
 	trending: Array<TrendingRepoItem>;
 }) {
-	const [tab, setTab] = useState<"repos" | "trending">("repos");
+	const [tab, setTab] = useState<"pinned" | "repos" | "trending">("repos");
+	const [pinnedRepos, setPinnedRepos] = useState<PinnedRepo[]>([]);
+
+	useEffect(() => {
+		const pinned = getPinnedRepos();
+		setPinnedRepos(pinned);
+		if (pinned.length > 0) {
+			setTab("pinned");
+		}
+	}, []);
+
+	const pinnedSet = useMemo(
+		() => new Set(pinnedRepos.map((r) => r.full_name)),
+		[pinnedRepos],
+	);
+
+	const handleTogglePin = useCallback((repo: RepoItem) => {
+		const updated = togglePinRepo({
+			id: repo.id,
+			full_name: repo.full_name,
+			name: repo.name,
+			owner: repo.owner,
+			language: repo.language,
+			stargazers_count: repo.stargazers_count,
+			private: repo.private,
+		});
+		setPinnedRepos(updated);
+	}, []);
+
+	const handleUnpin = useCallback((fullName: string) => {
+		const updated = unpinRepo(fullName);
+		setPinnedRepos(updated);
+	}, []);
 
 	return (
 		<section className="flex-1 border border-border flex flex-col min-h-0">
 			<div className="shrink-0 flex items-center border-b border-border overflow-x-auto no-scrollbar">
+				{pinnedRepos.length > 0 && (
+					<button
+						onClick={() => setTab("pinned")}
+						className={cn(
+							"flex items-center gap-2 px-4 py-2 text-[11px] font-mono uppercase tracking-wider transition-colors cursor-pointer",
+							tab === "pinned"
+								? "text-foreground bg-muted/50 dark:bg-white/[0.04]"
+								: "text-muted-foreground hover:text-foreground/60",
+						)}
+					>
+						<Pin className="w-3 h-3" />
+						Pinned
+					</button>
+				)}
 				<button
 					onClick={() => setTab("repos")}
 					className={cn(
@@ -474,25 +523,38 @@ function ReposTabs({
 						<ChevronRight className="w-3 h-3" />
 					</Link>
 				)}
-				{tab === "repos" && (
+				{(tab === "repos" || tab === "pinned") && (
 					<div className="ml-auto mr-3">
 						<CreateRepoDialog />
 					</div>
 				)}
 			</div>
 			<div className="overflow-y-auto">
-				{tab === "repos"
-					? repos
-							.slice(0, 10)
-							.map((repo) => (
-								<RepoRow
-									key={repo.id}
-									repo={repo}
-								/>
-							))
-					: trending.map((repo) => (
-							<TrendingRow key={repo.id} repo={repo} />
+				{tab === "pinned" &&
+					pinnedRepos.map((repo) => (
+						<PinnedRepoRow
+							key={repo.id}
+							repo={repo}
+							onUnpin={handleUnpin}
+						/>
+					))}
+				{tab === "repos" &&
+					repos
+						.slice(0, 10)
+						.map((repo) => (
+							<RepoRow
+								key={repo.id}
+								repo={repo}
+								isPinned={pinnedSet.has(
+									repo.full_name,
+								)}
+								onTogglePin={handleTogglePin}
+							/>
 						))}
+				{tab === "trending" &&
+					trending.map((repo) => (
+						<TrendingRow key={repo.id} repo={repo} />
+					))}
 			</div>
 		</section>
 	);
@@ -654,54 +716,152 @@ function ItemRow({ item, type }: { item: IssueItem; type: "pr" | "issue" }) {
 
 /* ── RepoRow ───────────────────────────────────────────────────────── */
 
-function RepoRow({ repo }: { repo: RepoItem }) {
+function RepoRow({
+	repo,
+	isPinned,
+	onTogglePin,
+}: {
+	repo: RepoItem;
+	isPinned?: boolean;
+	onTogglePin?: (repo: RepoItem) => void;
+}) {
 	return (
-		<Link
-			href={`/${repo.full_name}`}
-			className="group flex items-center gap-2.5 px-4 py-2 hover:bg-muted/50 dark:hover:bg-white/[0.02] transition-colors border-b border-border/40 last:border-b-0"
-		>
-			<Image
-				src={repo.owner.avatar_url}
-				alt={repo.owner.login}
-				width={18}
-				height={18}
-				className="rounded-sm shrink-0 w-[18px] h-[18px] object-cover"
-			/>
-			<span className="text-xs font-mono truncate group-hover:text-foreground transition-colors min-w-0">
-				<span className="text-muted-foreground/40">{repo.owner.login}</span>
-				<span className="text-muted-foreground/25 mx-0.5">/</span>
-				<span className="font-medium">{repo.name}</span>
-			</span>
-			{repo.private && (
-				<Lock className="w-2.5 h-2.5 text-muted-foreground/40 shrink-0" />
+		<div className="group flex items-center gap-2.5 px-4 py-2 hover:bg-muted/50 dark:hover:bg-white/[0.02] transition-colors border-b border-border/40 last:border-b-0">
+			<Link
+				href={`/${repo.full_name}`}
+				className="flex items-center gap-2.5 flex-1 min-w-0"
+			>
+				<Image
+					src={repo.owner.avatar_url}
+					alt={repo.owner.login}
+					width={18}
+					height={18}
+					className="rounded-sm shrink-0 w-[18px] h-[18px] object-cover"
+				/>
+				<span className="text-xs font-mono truncate group-hover:text-foreground transition-colors min-w-0">
+					<span className="text-muted-foreground/40">
+						{repo.owner.login}
+					</span>
+					<span className="text-muted-foreground/25 mx-0.5">/</span>
+					<span className="font-medium">{repo.name}</span>
+				</span>
+				{repo.private && (
+					<Lock className="w-2.5 h-2.5 text-muted-foreground/40 shrink-0" />
+				)}
+				<div className="flex items-center gap-2.5 ml-auto shrink-0 text-[10px] text-muted-foreground/45">
+					{repo.language && (
+						<span className="flex items-center gap-1 font-mono">
+							<span
+								className="w-1.5 h-1.5 rounded-full shrink-0"
+								style={{
+									backgroundColor:
+										getLanguageColor(
+											repo.language,
+										),
+								}}
+							/>
+							{repo.language}
+						</span>
+					)}
+					{repo.stargazers_count > 0 && (
+						<span className="flex items-center gap-0.5">
+							<Star className="w-2.5 h-2.5" />
+							{formatNumber(repo.stargazers_count)}
+						</span>
+					)}
+				</div>
+			</Link>
+			{onTogglePin && (
+				<button
+					onClick={(e) => {
+						e.preventDefault();
+						onTogglePin(repo);
+					}}
+					className={cn(
+						"shrink-0 p-1 transition-all cursor-pointer",
+						isPinned
+							? "text-foreground/60 hover:text-foreground"
+							: "text-muted-foreground/30 opacity-0 group-hover:opacity-100 hover:text-foreground/60",
+					)}
+					title={isPinned ? "Unpin repository" : "Pin repository"}
+				>
+					{isPinned ? (
+						<PinOff className="w-3.5 h-3.5" />
+					) : (
+						<Pin className="w-3.5 h-3.5" />
+					)}
+				</button>
 			)}
-			<div className="flex items-center gap-2.5 ml-auto shrink-0 text-[10px] text-muted-foreground/45">
-				{repo.language && (
-					<span className="flex items-center gap-1 font-mono">
-						<span
-							className="w-1.5 h-1.5 rounded-full shrink-0"
-							style={{
-								backgroundColor: getLanguageColor(
-									repo.language,
-								),
-							}}
-						/>
-						{repo.language}
+		</div>
+	);
+}
+
+/* ── PinnedRepoRow ─────────────────────────────────────────────────── */
+
+function PinnedRepoRow({
+	repo,
+	onUnpin,
+}: {
+	repo: PinnedRepo;
+	onUnpin: (fullName: string) => void;
+}) {
+	return (
+		<div className="group flex items-center gap-2.5 px-4 py-2 hover:bg-muted/50 dark:hover:bg-white/[0.02] transition-colors border-b border-border/40 last:border-b-0">
+			<Link
+				href={`/${repo.full_name}`}
+				className="flex items-center gap-2.5 flex-1 min-w-0"
+			>
+				<Image
+					src={repo.owner.avatar_url}
+					alt={repo.owner.login}
+					width={18}
+					height={18}
+					className="rounded-sm shrink-0 w-[18px] h-[18px] object-cover"
+				/>
+				<span className="text-xs font-mono truncate group-hover:text-foreground transition-colors min-w-0">
+					<span className="text-muted-foreground/40">
+						{repo.owner.login}
 					</span>
+					<span className="text-muted-foreground/25 mx-0.5">/</span>
+					<span className="font-medium">{repo.name}</span>
+				</span>
+				{repo.private && (
+					<Lock className="w-2.5 h-2.5 text-muted-foreground/40 shrink-0" />
 				)}
-				{repo.stargazers_count > 0 && (
-					<span className="flex items-center gap-0.5">
-						<Star className="w-2.5 h-2.5" />
-						{formatNumber(repo.stargazers_count)}
-					</span>
-				)}
-				{repo.updated_at && (
-					<span className="font-mono">
-						<TimeAgo date={repo.updated_at} />
-					</span>
-				)}
-			</div>
-		</Link>
+				<div className="flex items-center gap-2.5 ml-auto shrink-0 text-[10px] text-muted-foreground/45">
+					{repo.language && (
+						<span className="flex items-center gap-1 font-mono">
+							<span
+								className="w-1.5 h-1.5 rounded-full shrink-0"
+								style={{
+									backgroundColor:
+										getLanguageColor(
+											repo.language,
+										),
+								}}
+							/>
+							{repo.language}
+						</span>
+					)}
+					{repo.stargazers_count > 0 && (
+						<span className="flex items-center gap-0.5">
+							<Star className="w-2.5 h-2.5" />
+							{formatNumber(repo.stargazers_count)}
+						</span>
+					)}
+				</div>
+			</Link>
+			<button
+				onClick={(e) => {
+					e.preventDefault();
+					onUnpin(repo.full_name);
+				}}
+				className="shrink-0 p-1 text-foreground/60 hover:text-foreground transition-all cursor-pointer"
+				title="Unpin repository"
+			>
+				<PinOff className="w-3.5 h-3.5" />
+			</button>
+		</div>
 	);
 }
 
