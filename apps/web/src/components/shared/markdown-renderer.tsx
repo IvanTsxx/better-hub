@@ -24,18 +24,21 @@ function isAbsoluteUrl(url: string): boolean {
  * Resolve relative URLs in the rendered HTML to point to raw.githubusercontent.com
  * for images and to our internal routes for links.
  */
+function buildImageProxyUrl(owner: string, repo: string, branch: string, imagePath: string): string {
+	return `/api/github-image?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}&path=${encodeURIComponent(imagePath)}&ref=${encodeURIComponent(branch)}`;
+}
+
 function resolveUrls(html: string, ctx: RepoContext): string {
-	const rawBase = `https://raw.githubusercontent.com/${ctx.owner}/${ctx.repo}/${ctx.branch}`;
 	const repoBase = `/${ctx.owner}/${ctx.repo}`;
 	const dir = ctx.dir || "";
 
-	// Resolve image src attributes
+	// Resolve image src attributes — proxy through API for auth support
 	html = html.replace(/(<img\s[^>]*?src=")([^"]+)(")/gi, (_match, before, src, after) => {
 		if (isAbsoluteUrl(src)) return _match;
-		// Handle /path (repo-root-relative) and ./path or path (dir-relative)
-		const resolved = src.startsWith("/")
-			? `${rawBase}${src}`
-			: `${rawBase}/${dir ? dir + "/" : ""}${src.replace(/^\.\//, "")}`;
+		const imagePath = src.startsWith("/")
+			? src.slice(1)
+			: `${dir ? dir + "/" : ""}${src.replace(/^\.\//, "")}`;
+		const resolved = buildImageProxyUrl(ctx.owner, ctx.repo, ctx.branch, imagePath);
 		return `${before}${resolved}${after}`;
 	});
 
@@ -55,9 +58,10 @@ function resolveUrls(html: string, ctx: RepoContext): string {
 		/(<source\s[^>]*?(?:src|srcset)=")([^"]+)(")/gi,
 		(_match, before, src, after) => {
 			if (isAbsoluteUrl(src)) return _match;
-			const resolved = src.startsWith("/")
-				? `${rawBase}${src}`
-				: `${rawBase}/${dir ? dir + "/" : ""}${src.replace(/^\.\//, "")}`;
+			const mediaPath = src.startsWith("/")
+				? src.slice(1)
+				: `${dir ? dir + "/" : ""}${src.replace(/^\.\//, "")}`;
+			const resolved = buildImageProxyUrl(ctx.owner, ctx.repo, ctx.branch, mediaPath);
 			return `${before}${resolved}${after}`;
 		},
 	);
@@ -67,9 +71,10 @@ function resolveUrls(html: string, ctx: RepoContext): string {
 		/(<video\s[^>]*?(?:src|poster)=")([^"]+)(")/gi,
 		(_match, before, src, after) => {
 			if (isAbsoluteUrl(src)) return _match;
-			const resolved = src.startsWith("/")
-				? `${rawBase}${src}`
-				: `${rawBase}/${dir ? dir + "/" : ""}${src.replace(/^\.\//, "")}`;
+			const mediaPath = src.startsWith("/")
+				? src.slice(1)
+				: `${dir ? dir + "/" : ""}${src.replace(/^\.\//, "")}`;
+			const resolved = buildImageProxyUrl(ctx.owner, ctx.repo, ctx.branch, mediaPath);
 			return `${before}${resolved}${after}`;
 		},
 	);
