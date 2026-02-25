@@ -938,6 +938,32 @@ async function fetchUserPublicOrgsFromGitHub(octokit: Octokit, username: string)
 	return data;
 }
 
+async function fetchUserOrgTopReposFromGitHub(
+	octokit: Octokit,
+	orgLogins: string[],
+): Promise<{ name: string; full_name: string; stargazers_count: number; forks_count: number; language: string | null }[]> {
+	if (orgLogins.length === 0) return [];
+	// Search top-starred repos across all the user's orgs in one call
+	const orgQuery = orgLogins.slice(0, 10).map((o) => `org:${o}`).join(" ");
+	try {
+		const { data } = await octokit.search.repos({
+			q: `${orgQuery} fork:true`,
+			sort: "stars",
+			order: "desc",
+			per_page: 30,
+		});
+		return data.items.map((r) => ({
+			name: r.name,
+			full_name: r.full_name,
+			stargazers_count: r.stargazers_count ?? 0,
+			forks_count: r.forks_count ?? 0,
+			language: r.language ?? null,
+		}));
+	} catch {
+		return [];
+	}
+}
+
 async function fetchRepoWorkflowsFromGitHub(octokit: Octokit, owner: string, repo: string) {
 	const { data } = await octokit.actions.listRepoWorkflows({ owner, repo, per_page: 100 });
 	return data.workflows;
@@ -4295,6 +4321,13 @@ export async function getUserPublicOrgs(username: string) {
 	});
 }
 
+export async function getUserOrgTopRepos(orgLogins: string[]) {
+	if (orgLogins.length === 0) return [];
+	const authCtx = await getGitHubAuthContext();
+	if (!authCtx) return [];
+	return fetchUserOrgTopReposFromGitHub(authCtx.octokit, orgLogins);
+}
+
 export async function getOrgMembers(org: string, perPage = 100) {
 	const authCtx = await getGitHubAuthContext();
 	return readLocalFirstGitData({
@@ -4317,6 +4350,7 @@ export interface ContributorWeek {
 
 export interface ContributorStats {
 	login: string;
+	avatar_url: string;
 	total: number;
 	weeks: ContributorWeek[];
 }
@@ -4338,6 +4372,7 @@ export async function getRepoContributorStats(
 		if (!Array.isArray(response.data)) return [];
 		return response.data.map((entry) => ({
 			login: entry.author?.login ?? "",
+			avatar_url: entry.author?.avatar_url ?? "",
 			total: entry.total ?? 0,
 			weeks: (entry.weeks ?? []).map((w) => ({
 				w: w.w ?? 0,

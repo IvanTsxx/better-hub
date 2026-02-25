@@ -1,11 +1,26 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { LogOut, Trash2, Github, Users, Shield, Check, Lock, Info, ExternalLink } from "lucide-react";
+import {
+	LogOut,
+	Trash2,
+	Github,
+	Users,
+	Shield,
+	Check,
+	Lock,
+	Info,
+	ExternalLink,
+	MapPin,
+	Building2,
+	Link as LinkIcon,
+	Calendar,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { signIn, signOut } from "@/lib/auth-client";
 import { SCOPE_GROUPS, scopesToGroupIds } from "@/lib/github-scopes";
 import type { UserSettings } from "@/lib/user-settings-store";
+import type { GitHubProfile } from "../settings-dialog";
 
 interface AccountTabProps {
 	user: {
@@ -15,6 +30,7 @@ interface AccountTabProps {
 	};
 	settings: UserSettings;
 	onUpdate: (updates: Partial<UserSettings>) => Promise<void>;
+	githubProfile: GitHubProfile;
 }
 
 function InfoPopover({ text, children }: { text: string; children: React.ReactNode }) {
@@ -49,7 +65,19 @@ function InfoPopover({ text, children }: { text: string; children: React.ReactNo
 	);
 }
 
-export function AccountTab({ user, settings, onUpdate }: AccountTabProps) {
+function formatCount(n: number): string {
+	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`;
+	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+	return n.toString();
+}
+
+function formatJoinDate(dateStr: string): string {
+	if (!dateStr) return "";
+	const d = new Date(dateStr);
+	return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+}
+
+export function AccountTab({ user, settings, onUpdate, githubProfile }: AccountTabProps) {
 	const [confirmDelete, setConfirmDelete] = useState(false);
 	const [grantedGroupIds, setGrantedGroupIds] = useState<Set<string>>(new Set());
 	const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -110,32 +138,100 @@ export function AccountTab({ user, settings, onUpdate }: AccountTabProps) {
 		window.location.href = "/";
 	}
 
+	const stats = [
+		{ label: "repos", value: githubProfile.public_repos },
+		{ label: "followers", value: githubProfile.followers },
+		{ label: "following", value: githubProfile.following },
+	];
+
+	const meta = [
+		githubProfile.company && { icon: Building2, text: githubProfile.company },
+		githubProfile.location && { icon: MapPin, text: githubProfile.location },
+		githubProfile.blog && { icon: LinkIcon, text: githubProfile.blog.replace(/^https?:\/\//, "") },
+		githubProfile.created_at && { icon: Calendar, text: `Joined ${formatJoinDate(githubProfile.created_at)}` },
+	].filter(Boolean) as { icon: typeof MapPin; text: string }[];
+
 	return (
 		<div className="divide-y divide-border">
-			{/* Profile */}
-			<div className="px-4 py-4">
-				<label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
-					Profile
-				</label>
-				<div className="flex items-center gap-3 mt-2">
-					{user.image && (
-						<img
-							src={user.image}
-							alt={user.name}
-							className="w-8 h-8 rounded-full"
-						/>
-					)}
-					<div>
-						<p className="text-xs font-mono font-medium">
-							{user.name}
-						</p>
-						<p className="text-[10px] font-mono text-muted-foreground/50">
-							{user.email}
-						</p>
+			{/* Profile Header — Instagram-style */}
+			<div className="px-4 py-5">
+				<div className="flex items-start gap-5">
+					{/* Avatar */}
+					<div className="relative shrink-0">
+						<div className="w-[72px] h-[72px] rounded-full p-[2px] bg-gradient-to-tr from-amber-400 via-pink-500 to-purple-600">
+							{user.image ? (
+								<img
+									src={user.image}
+									alt={user.name}
+									className="w-full h-full rounded-full object-cover border-2 border-background"
+								/>
+							) : (
+								<div className="w-full h-full rounded-full bg-muted border-2 border-background flex items-center justify-center">
+									<Github className="w-6 h-6 text-muted-foreground" />
+								</div>
+							)}
+						</div>
+					</div>
+
+					{/* Info + Stats */}
+					<div className="flex-1 min-w-0">
+						<div className="flex items-center gap-2">
+							<span className="text-sm font-medium truncate">
+								{user.name}
+							</span>
+							<a
+								href={`https://github.com/${githubProfile.login}`}
+								target="_blank"
+								rel="noopener noreferrer"
+								className="text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+							>
+								<ExternalLink className="w-3 h-3" />
+							</a>
+						</div>
+						<div className="text-[11px] font-mono text-muted-foreground/50 mt-0.5">
+							@{githubProfile.login}
+						</div>
+
+						{/* Stats row */}
+						<div className="flex items-center gap-5 mt-3">
+							{stats.map((s) => (
+								<div key={s.label} className="text-center">
+									<div className="text-sm font-semibold font-mono">
+										{formatCount(s.value)}
+									</div>
+									<div className="text-[10px] text-muted-foreground/50">
+										{s.label}
+									</div>
+								</div>
+							))}
+						</div>
 					</div>
 				</div>
-				<p className="mt-2 text-[10px] text-muted-foreground/50 font-mono">
-					Profile info is synced from GitHub.
+
+				{/* Bio */}
+				{githubProfile.bio && (
+					<p className="text-[11px] text-muted-foreground mt-3 leading-relaxed">
+						{githubProfile.bio}
+					</p>
+				)}
+
+				{/* Meta details */}
+				{meta.length > 0 && (
+					<div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2">
+						{meta.map((m) => (
+							<span
+								key={m.text}
+								className="inline-flex items-center gap-1 text-[10px] font-mono text-muted-foreground/40"
+							>
+								<m.icon className="w-2.5 h-2.5" />
+								{m.text}
+							</span>
+						))}
+					</div>
+				)}
+
+				<p className="mt-3 text-[10px] text-muted-foreground/30 font-mono">
+					Profile synced from GitHub
 				</p>
 			</div>
 

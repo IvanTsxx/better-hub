@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { getUser, getUserPublicRepos, getUserPublicOrgs, getContributionData } from "@/lib/github";
+import { getUser, getUserPublicRepos, getUserPublicOrgs, getUserOrgTopRepos, getContributionData } from "@/lib/github";
 import { UserProfileContent } from "@/components/users/user-profile-content";
 import { ExternalLink, User } from "lucide-react";
 
@@ -55,6 +55,7 @@ export default async function UserProfilePage({
 	let reposData: Awaited<ReturnType<typeof getUserPublicRepos>> = [];
 	let orgsData: Awaited<ReturnType<typeof getUserPublicOrgs>> = [];
 	let contributionData: Awaited<ReturnType<typeof getContributionData>> = null;
+	let orgTopRepos: Awaited<ReturnType<typeof getUserOrgTopRepos>> = [];
 
 	try {
 		userData = await getUser(username);
@@ -75,6 +76,10 @@ export default async function UserProfilePage({
 				getUserPublicOrgs(resolvedLogin),
 				getContributionData(resolvedLogin),
 			]);
+			// Fetch top repos from the user's orgs (for scoring)
+			if (orgsData.length > 0) {
+				orgTopRepos = await getUserOrgTopRepos(orgsData.map((o) => o.login));
+			}
 		} catch {
 			// Show profile with whatever we have
 		}
@@ -119,6 +124,13 @@ export default async function UserProfilePage({
 				avatar_url: org.avatar_url,
 			}))}
 			contributions={contributionData}
+			orgTopRepos={orgTopRepos.map((r) => ({
+				name: r.name,
+				full_name: r.full_name,
+				stargazers_count: r.stargazers_count,
+				forks_count: r.forks_count,
+				language: r.language,
+			}))}
 		/>
 	);
 }

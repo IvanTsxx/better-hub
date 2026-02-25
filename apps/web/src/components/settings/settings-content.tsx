@@ -9,6 +9,7 @@ import { BillingTab } from "./tabs/billing-tab";
 import { AccountTab } from "./tabs/account-tab";
 import { EditorTab } from "./tabs/editor-tab";
 import type { UserSettings } from "@/lib/user-settings-store";
+import type { GitHubProfile } from "./settings-dialog";
 import { useMutationEvents } from "@/components/shared/mutation-event-provider";
 
 const TABS = [
@@ -24,9 +25,10 @@ type TabId = (typeof TABS)[number]["id"];
 interface SettingsContentProps {
 	initialSettings: UserSettings;
 	user: { name: string; email: string; image: string | null };
+	githubProfile: GitHubProfile;
 }
 
-export function SettingsContent({ initialSettings, user }: SettingsContentProps) {
+export function SettingsContent({ initialSettings, user, githubProfile }: SettingsContentProps) {
 	const [activeTab, setActiveTab] = useState<TabId>("general");
 	const [settings, setSettings] = useState(initialSettings);
 	const { emit } = useMutationEvents();
@@ -89,6 +91,7 @@ export function SettingsContent({ initialSettings, user }: SettingsContentProps)
 						user={user}
 						settings={settings}
 						onUpdate={handleUpdate}
+						githubProfile={githubProfile}
 					/>
 				)}
 			</div>

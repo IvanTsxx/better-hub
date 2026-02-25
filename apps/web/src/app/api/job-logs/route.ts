@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getOctokit } from "@/lib/github";
-import { getErrorStatus } from "@/lib/utils";
+import { getGitHubToken } from "@/lib/github";
 
 type AnnotationType = "error" | "warning" | "debug" | "notice" | null;
 
@@ -82,32 +81,41 @@ export async function GET(request: NextRequest) {
 		);
 	}
 
-	const octokit = await getOctokit();
-	if (!octokit) {
+	const token = await getGitHubToken();
+	if (!token) {
 		return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 	}
 
 	try {
-		const { data } = await octokit.actions.downloadJobLogsForWorkflowRun({
-			owner,
-			repo,
-			job_id: Number(jobId),
-		});
+		const res = await fetch(
+			`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/jobs/${encodeURIComponent(jobId)}/logs`,
+			{
+				headers: {
+					Authorization: `Bearer ${token}`,
+					Accept: "application/vnd.github+json",
+				},
+				redirect: "follow",
+			},
+		);
 
-		const steps = parseLogText(typeof data === "string" ? data : String(data));
-
-		return NextResponse.json({ steps });
-	} catch (err: unknown) {
-		const status = getErrorStatus(err);
-		if (status === 410) {
+		if (res.status === 410) {
 			return NextResponse.json(
 				{ error: "Logs are no longer available" },
 				{ status: 410 },
 			);
 		}
-		if (status === 404) {
+		if (res.status === 404) {
 			return NextResponse.json({ error: "Job not found" }, { status: 404 });
 		}
+		if (!res.ok) {
+			return NextResponse.json({ error: "Failed to fetch logs" }, { status: res.status });
+		}
+
+		const raw = await res.text();
+		const steps = parseLogText(raw);
+
+		return NextResponse.json({ steps });
+	} catch {
 		return NextResponse.json({ error: "Failed to fetch logs" }, { status: 500 });
 	}
 }

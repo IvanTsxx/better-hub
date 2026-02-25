@@ -450,6 +450,19 @@ export function AppNavbar({ session, notifications }: AppNavbarProps) {
 					email: session.user.email,
 					image: session.user.image ?? null,
 				}}
+				githubProfile={{
+					login: gh.login,
+					avatar_url: gh.avatar_url,
+					bio: gh.bio ?? null,
+					company: gh.company ?? null,
+					location: gh.location ?? null,
+					blog: gh.blog ?? null,
+					twitter_username: gh.twitter_username ?? null,
+					public_repos: gh.public_repos ?? 0,
+					followers: gh.followers ?? 0,
+					following: gh.following ?? 0,
+					created_at: gh.created_at ?? "",
+				}}
 			/>
 		</header>
 	);

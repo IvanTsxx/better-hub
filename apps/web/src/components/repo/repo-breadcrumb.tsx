@@ -3,7 +3,7 @@
 import { useState, useCallback, useMemo, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronDown, Lock, Star, Loader2, Search } from "lucide-react";
+import { ChevronDown, Lock, Star, Search } from "lucide-react";
 import {
 	DropdownMenu,
 	DropdownMenuTrigger,
@@ -102,8 +102,8 @@ export function RepoBreadcrumb({ owner, repoName, ownerType }: RepoBreadcrumbPro
 						onCloseAutoFocus={(e) => e.preventDefault()}
 					>
 						{isLoading ? (
-							<div className="flex items-center justify-center py-4">
-								<Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+							<div className="px-2 py-3 text-xs text-muted-foreground/50 text-center">
+								Loading...
 							</div>
 						) : hasError ? (
 							<div className="px-2 py-3 text-xs text-muted-foreground text-center">

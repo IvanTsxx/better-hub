@@ -642,57 +642,51 @@ function RepoRow({ repo }: { repo: RepoItem }) {
 	return (
 		<Link
 			href={`/${repo.full_name}`}
-			className="group flex gap-3 px-4 py-2.5 hover:bg-muted/50 dark:hover:bg-white/[0.02] transition-colors border-b border-border/60 last:border-b-0"
+			className="group flex items-center gap-2.5 px-4 py-2 hover:bg-muted/50 dark:hover:bg-white/[0.02] transition-colors border-b border-border/40 last:border-b-0"
 		>
 			<Image
 				src={repo.owner.avatar_url}
 				alt={repo.owner.login}
-				width={20}
-				height={20}
-				className="rounded-sm shrink-0 mt-0.5 w-5 h-5 object-cover"
+				width={18}
+				height={18}
+				className="rounded-sm shrink-0 w-[18px] h-[18px] object-cover"
 			/>
-			<div className="flex-1 min-w-0">
-				<div className="flex items-center gap-2">
-					<span className="text-xs font-mono truncate group-hover:text-foreground transition-colors">
-						<span className="text-muted-foreground/50">
-							{repo.owner.login}
-						</span>
-						<span className="text-muted-foreground/30 mx-0.5">
-							/
-						</span>
-						<span className="font-medium">{repo.name}</span>
+			<span className="text-xs font-mono truncate group-hover:text-foreground transition-colors min-w-0">
+				<span className="text-muted-foreground/40">
+					{repo.owner.login}
+				</span>
+				<span className="text-muted-foreground/25 mx-0.5">
+					/
+				</span>
+				<span className="font-medium">{repo.name}</span>
+			</span>
+			{repo.private && (
+				<Lock className="w-2.5 h-2.5 text-muted-foreground/40 shrink-0" />
+			)}
+			<div className="flex items-center gap-2.5 ml-auto shrink-0 text-[10px] text-muted-foreground/45">
+				{repo.language && (
+					<span className="flex items-center gap-1 font-mono">
+						<span
+							className="w-1.5 h-1.5 rounded-full shrink-0"
+							style={{
+								backgroundColor:
+									getLanguageColor(repo.language),
+							}}
+						/>
+						{repo.language}
 					</span>
-					{repo.private && (
-						<Lock className="w-2.5 h-2.5 text-muted-foreground/50 shrink-0" />
-					)}
-				</div>
-				<div className="flex items-center gap-3 mt-0.5 text-[11px] text-muted-foreground/60">
-					{repo.language && (
-						<span className="flex items-center gap-1 font-mono">
-							<span
-								className="w-2 h-2 rounded-full shrink-0"
-								style={{
-									backgroundColor:
-										getLanguageColor(
-											repo.language,
-										),
-								}}
-							/>
-							{repo.language}
-						</span>
-					)}
-					{repo.stargazers_count > 0 && (
-						<span className="flex items-center gap-0.5">
-							<Star className="w-2.5 h-2.5" />
-							{formatNumber(repo.stargazers_count)}
-						</span>
-					)}
-					{repo.updated_at && (
-						<span className="ml-auto text-muted-foreground/50 font-mono">
-							<TimeAgo date={repo.updated_at} />
-						</span>
-					)}
-				</div>
+				)}
+				{repo.stargazers_count > 0 && (
+					<span className="flex items-center gap-0.5">
+						<Star className="w-2.5 h-2.5" />
+						{formatNumber(repo.stargazers_count)}
+					</span>
+				)}
+				{repo.updated_at && (
+					<span className="font-mono">
+						<TimeAgo date={repo.updated_at} />
+					</span>
+				)}
 			</div>
 		</Link>
 	);
@@ -704,58 +698,56 @@ function TrendingRow({ repo }: { repo: TrendingRepoItem }) {
 	return (
 		<Link
 			href={`/${repo.full_name}`}
-			className="group flex gap-3 px-4 py-2.5 hover:bg-muted/50 dark:hover:bg-white/[0.02] transition-colors border-b border-border/60 last:border-b-0"
+			className="group flex items-start gap-2.5 px-4 py-2 hover:bg-muted/50 dark:hover:bg-white/[0.02] transition-colors border-b border-border/40 last:border-b-0"
 		>
 			<Image
 				src={repo.owner?.avatar_url ?? ""}
 				alt={repo.owner?.login ?? ""}
-				width={20}
-				height={20}
-				className="rounded-sm shrink-0 mt-0.5 w-5 h-5 object-cover"
+				width={18}
+				height={18}
+				className="rounded-sm shrink-0 mt-0.5 w-[18px] h-[18px] object-cover"
 			/>
 			<div className="flex-1 min-w-0">
 				<div className="flex items-center gap-2">
 					<span className="text-xs font-mono truncate group-hover:text-foreground transition-colors">
-						<span className="text-muted-foreground/50">
+						<span className="text-muted-foreground/40">
 							{repo.owner?.login}
 						</span>
-						<span className="text-muted-foreground/30 mx-0.5">
+						<span className="text-muted-foreground/25 mx-0.5">
 							/
 						</span>
 						<span className="font-medium">{repo.name}</span>
 					</span>
+					<div className="flex items-center gap-2 ml-auto shrink-0 text-[10px] text-muted-foreground/45">
+						{repo.language && (
+							<span className="flex items-center gap-1 font-mono">
+								<span
+									className="w-1.5 h-1.5 rounded-full shrink-0"
+									style={{
+										backgroundColor:
+											getLanguageColor(repo.language),
+									}}
+								/>
+								{repo.language}
+							</span>
+						)}
+						<span className="flex items-center gap-0.5">
+							<Star className="w-2.5 h-2.5" />
+							{formatNumber(repo.stargazers_count)}
+						</span>
+						{repo.forks_count > 0 && (
+							<span className="flex items-center gap-0.5">
+								<GitFork className="w-2.5 h-2.5" />
+								{formatNumber(repo.forks_count)}
+							</span>
+						)}
+					</div>
 				</div>
 				{repo.description && (
-					<p className="text-[11px] text-muted-foreground/60 truncate mt-0.5 leading-relaxed">
+					<p className="text-[10px] text-muted-foreground/40 truncate mt-0.5">
 						{repo.description}
 					</p>
 				)}
-				<div className="flex items-center gap-3 mt-0.5 text-[11px] text-muted-foreground/60">
-					{repo.language && (
-						<span className="flex items-center gap-1 font-mono">
-							<span
-								className="w-2 h-2 rounded-full shrink-0"
-								style={{
-									backgroundColor:
-										getLanguageColor(
-											repo.language,
-										),
-								}}
-							/>
-							{repo.language}
-						</span>
-					)}
-					<span className="flex items-center gap-0.5">
-						<Star className="w-2.5 h-2.5" />
-						{formatNumber(repo.stargazers_count)}
-					</span>
-					{repo.forks_count > 0 && (
-						<span className="flex items-center gap-0.5">
-							<GitFork className="w-2.5 h-2.5" />
-							{formatNumber(repo.forks_count)}
-						</span>
-					)}
-				</div>
 			</div>
 		</Link>
 	);

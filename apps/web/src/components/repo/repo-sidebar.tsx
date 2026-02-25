@@ -17,6 +17,7 @@ import { StarButton } from "@/components/repo/star-button";
 import { ForkButton } from "@/components/repo/fork-button";
 import { SidebarLanguages } from "@/components/repo/sidebar-languages";
 import { SidebarContributors } from "@/components/repo/sidebar-contributors";
+import { SidebarUsedBy } from "@/components/repo/sidebar-used-by";
 import { LatestCommitSection } from "@/components/repo/latest-commit-section";
 import { RepoBreadcrumb } from "@/components/repo/repo-breadcrumb";
 import type { ContributorAvatarsData } from "@/lib/repo-data-cache";
@@ -284,6 +285,9 @@ export function RepoSidebar({
 					repo={repoName}
 					initialData={initialContributors}
 				/>
+
+				{/* Used by (client-fetched) */}
+				<SidebarUsedBy owner={owner} repo={repoName} />
 			</aside>
 
 			{/* Mobile compact header */}

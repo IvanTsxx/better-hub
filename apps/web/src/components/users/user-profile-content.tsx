@@ -92,16 +92,26 @@ function formatJoinedDate(value: string | null): string | null {
 	});
 }
 
+export interface OrgTopRepo {
+	name: string;
+	full_name: string;
+	stargazers_count: number;
+	forks_count: number;
+	language: string | null;
+}
+
 export function UserProfileContent({
 	user,
 	repos,
 	orgs,
 	contributions,
+	orgTopRepos = [],
 }: {
 	user: UserProfile;
 	repos: UserRepo[];
 	orgs: UserOrg[];
 	contributions: ContributionData | null;
+	orgTopRepos?: OrgTopRepo[];
 }) {
 	const [search, setSearch] = useState("");
 	const [filter, setFilter] = useState<FilterType>("all");
@@ -175,8 +185,20 @@ export function UserProfileContent({
 	const totalForks = useMemo(() => repos.reduce((sum, r) => sum + r.forks_count, 0), [repos]);
 
 	const profileScore = useMemo(() => {
-		const topRepoStars = repos.length > 0 ? Math.max(...repos.map((r) => r.stargazers_count)) : 0;
-		const languageCount = new Set(repos.map((r) => r.language).filter(Boolean)).size;
+		const personalTopStars = repos.length > 0 ? Math.max(...repos.map((r) => r.stargazers_count)) : 0;
+		const orgTopStars = orgTopRepos.length > 0 ? Math.max(...orgTopRepos.map((r) => r.stargazers_count)) : 0;
+		const topRepoStars = Math.max(personalTopStars, orgTopStars);
+
+		// Include org repo stars/forks in totals
+		const orgStars = orgTopRepos.reduce((sum, r) => sum + r.stargazers_count, 0);
+		const orgForks = orgTopRepos.reduce((sum, r) => sum + r.forks_count, 0);
+
+		// Languages from both personal and org repos
+		const allLanguages = [
+			...repos.map((r) => r.language),
+			...orgTopRepos.map((r) => r.language),
+		].filter(Boolean);
+		const languageCount = new Set(allLanguages).size;
 
 		return computeUserProfileScore({
 			followers: user.followers,
@@ -184,14 +206,14 @@ export function UserProfileContent({
 			publicRepos: user.public_repos,
 			accountCreated: user.created_at,
 			hasBio: !!user.bio,
-			totalStars,
+			totalStars: totalStars + orgStars,
 			topRepoStars,
-			totalForks,
+			totalForks: totalForks + orgForks,
 			totalContributions: contributions?.totalContributions ?? 0,
 			orgCount: orgs.length,
 			languageCount,
 		});
-	}, [user, repos, orgs, contributions, totalStars, totalForks]);
+	}, [user, repos, orgs, contributions, totalStars, totalForks, orgTopRepos]);
 
 	return (
 		<div className="flex flex-col lg:flex-row gap-8 flex-1 min-h-0">

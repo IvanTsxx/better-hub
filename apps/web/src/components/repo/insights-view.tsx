@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Image from "next/image";
 import { cn, formatNumber } from "@/lib/utils";
 import type {
 	CommitActivityWeek,
@@ -62,6 +61,7 @@ interface InsightsViewProps {
 	participation: WeeklyParticipation | null;
 	languages: Record<string, number>;
 	contributors: ContributorStats[];
+	isOrg: boolean;
 }
 
 function formatWeekDate(unixTimestamp: number): string {
@@ -371,21 +371,27 @@ function CodeFrequencySection({ data }: { data: CodeFrequencyWeek[] }) {
 }
 
 // --- Contributors Section ---
+const INITIAL_CONTRIBUTOR_COUNT = 10;
+
 function ContributorsSection({ contributors }: { contributors: ContributorStats[] }) {
+	const [showAll, setShowAll] = useState(false);
+
 	if (contributors.length === 0)
 		return <EmptyState message="No contributor data available" />;
 
-	const sorted = [...contributors].sort((a, b) => b.total - a.total).slice(0, 10);
+	const sorted = [...contributors].sort((a, b) => b.total - a.total);
+	const hasMore = sorted.length > INITIAL_CONTRIBUTOR_COUNT;
+	const visible = showAll ? sorted : sorted.slice(0, INITIAL_CONTRIBUTOR_COUNT);
 	const sparklineWeeks = 12;
 	const maxSparkline = Math.max(
-		...sorted.flatMap((c) => c.weeks.slice(-sparklineWeeks).map((w) => w.c)),
+		...visible.flatMap((c) => c.weeks.slice(-sparklineWeeks).map((w) => w.c)),
 		1,
 	);
 
 	return (
 		<Section title="Top Contributors" subtitle={`${contributors.length} total`}>
 			<div className="space-y-2">
-				{sorted.map((c) => {
+				{visible.map((c) => {
 					const recent = c.weeks.slice(-sparklineWeeks);
 					const totalAdd = c.weeks.reduce((s, w) => s + w.a, 0);
 					const totalDel = c.weeks.reduce((s, w) => s + w.d, 0);
@@ -394,12 +400,13 @@ function ContributorsSection({ contributors }: { contributors: ContributorStats[
 							key={c.login}
 							className="flex items-center gap-3 py-1"
 						>
-							<Image
-								src={`https://github.com/${c.login}.png?size=32`}
+							{/* eslint-disable-next-line @next/next/no-img-element */}
+							<img
+								src={c.avatar_url || `https://github.com/${c.login}.png?size=32`}
 								alt={c.login}
 								width={20}
 								height={20}
-								className="rounded-full"
+								className="rounded-full w-5 h-5 object-cover bg-muted"
 							/>
 							<span className="text-xs font-mono text-foreground/80 w-28 truncate">
 								{c.login}
@@ -425,6 +432,16 @@ function ContributorsSection({ contributors }: { contributors: ContributorStats[
 					);
 				})}
 			</div>
+			{hasMore && (
+				<button
+					onClick={() => setShowAll(!showAll)}
+					className="mt-3 text-[11px] font-mono text-muted-foreground/60 hover:text-foreground/80 transition-colors cursor-pointer"
+				>
+					{showAll
+						? "Show less"
+						: `Show all ${sorted.length} contributors`}
+				</button>
+			)}
 		</Section>
 	);
 }
@@ -492,7 +509,7 @@ function LanguagesSection({ languages }: { languages: Record<string, number> }) 
 }
 
 // --- Participation Section ---
-function ParticipationSection({ participation }: { participation: WeeklyParticipation | null }) {
+function ParticipationSection({ participation, isOrg }: { participation: WeeklyParticipation | null; isOrg: boolean }) {
 	const [hovered, setHovered] = useState<number | null>(null);
 
 	if (!participation) return <EmptyState message="No participation data available" />;
@@ -503,11 +520,12 @@ function ParticipationSection({ participation }: { participation: WeeklyParticip
 
 	const ownerTotal = ownerData.reduce((s, v) => s + v, 0);
 	const communityTotal = all.reduce((s, v) => s + v, 0) - ownerTotal;
+	const ownerLabel = isOrg ? "Members" : "Owner";
 
 	return (
 		<Section
 			title="Participation"
-			subtitle={`Owner: ${formatNumber(ownerTotal)} | Community: ${formatNumber(communityTotal)}`}
+			subtitle={`${ownerLabel}: ${formatNumber(ownerTotal)} | Community: ${formatNumber(communityTotal)}`}
 		>
 			<div className="flex items-end gap-px" style={{ height: chartHeight }}>
 				{all.map((total, i) => {
@@ -554,7 +572,7 @@ function ParticipationSection({ participation }: { participation: WeeklyParticip
 							/>
 							{hovered === i && (
 								<div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 z-10 whitespace-nowrap px-2 py-1 text-[10px] font-mono bg-card text-foreground rounded shadow-lg">
-									Owner: {ownerVal} |
+									{ownerLabel}: {ownerVal} |
 									Community: {communityVal}
 								</div>
 							)}
@@ -564,7 +582,7 @@ function ParticipationSection({ participation }: { participation: WeeklyParticip
 			</div>
 			<div className="flex items-center gap-4 mt-3 text-[10px] font-mono text-muted-foreground/60">
 				<span className="flex items-center gap-1.5">
-					<span className="w-2 h-2 rounded-sm bg-success/70" /> Owner
+					<span className="w-2 h-2 rounded-sm bg-success/70" /> {ownerLabel}
 				</span>
 				<span className="flex items-center gap-1.5">
 					<span className="w-2 h-2 rounded-sm bg-success/30" />{" "}
@@ -583,6 +601,7 @@ export function InsightsView({
 	participation,
 	languages,
 	contributors,
+	isOrg,
 }: InsightsViewProps) {
 	return (
 		<div className="space-y-4">
@@ -593,7 +612,7 @@ export function InsightsView({
 				<ContributorsSection contributors={contributors} />
 				<LanguagesSection languages={languages} />
 			</div>
-			<ParticipationSection participation={participation} />
+			<ParticipationSection participation={participation} isOrg={isOrg} />
 		</div>
 	);
 }

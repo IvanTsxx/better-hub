@@ -6,6 +6,7 @@ import {
 	getUser,
 	getUserPublicRepos,
 	getUserPublicOrgs,
+	getUserOrgTopRepos,
 	getContributionData,
 } from "@/lib/github";
 import { OrgDetailContent } from "@/components/orgs/org-detail-content";
@@ -93,6 +94,7 @@ export default async function OwnerPage({ params }: { params: Promise<{ owner: s
 	let reposData: Awaited<ReturnType<typeof getUserPublicRepos>> = [];
 	let orgsData: Awaited<ReturnType<typeof getUserPublicOrgs>> = [];
 	let contributionData: Awaited<ReturnType<typeof getContributionData>> = null;
+	let orgTopRepos: Awaited<ReturnType<typeof getUserOrgTopRepos>> = [];
 
 	if (!isBot) {
 		try {
@@ -101,6 +103,9 @@ export default async function OwnerPage({ params }: { params: Promise<{ owner: s
 				getUserPublicOrgs(userData.login),
 				getContributionData(userData.login),
 			]);
+			if (orgsData.length > 0) {
+				orgTopRepos = await getUserOrgTopRepos(orgsData.map((o) => o.login));
+			}
 		} catch {
 			// Show profile with whatever we have
 		}
@@ -145,6 +150,13 @@ export default async function OwnerPage({ params }: { params: Promise<{ owner: s
 				avatar_url: org.avatar_url,
 			}))}
 			contributions={contributionData}
+			orgTopRepos={orgTopRepos.map((r) => ({
+				name: r.name,
+				full_name: r.full_name,
+				stargazers_count: r.stargazers_count,
+				forks_count: r.forks_count,
+				language: r.language,
+			}))}
 		/>
 	);
 }

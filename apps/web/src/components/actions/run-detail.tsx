@@ -76,7 +76,11 @@ function conclusionLabel(conclusion: string | null, status: string): string {
 	return conclusion ?? status;
 }
 
+const COLLAPSED_LINE_LIMIT = 200;
+
 function StepLogViewer({ stepLog }: { stepLog: StepLog | undefined }) {
+	const [expanded, setExpanded] = useState(false);
+
 	if (!stepLog || stepLog.lines.length === 0) {
 		return (
 			<div className="px-4 py-3 text-[11px] font-mono text-muted-foreground/40">
@@ -85,11 +89,14 @@ function StepLogViewer({ stepLog }: { stepLog: StepLog | undefined }) {
 		);
 	}
 
+	const isLong = stepLog.lines.length > COLLAPSED_LINE_LIMIT;
+	const visibleLines = !isLong || expanded ? stepLog.lines : stepLog.lines.slice(0, COLLAPSED_LINE_LIMIT);
+
 	return (
-		<div className="max-h-[500px] overflow-auto bg-black/20">
+		<div className="bg-black/20">
 			<table className="w-full text-[11px] font-mono leading-[1.6]">
 				<tbody>
-					{stepLog.lines.map((line, i) => (
+					{visibleLines.map((line, i) => (
 						<tr
 							key={i}
 							className={cn(
@@ -126,6 +133,14 @@ function StepLogViewer({ stepLog }: { stepLog: StepLog | undefined }) {
 					))}
 				</tbody>
 			</table>
+			{isLong && !expanded && (
+				<button
+					onClick={() => setExpanded(true)}
+					className="w-full px-4 py-2 text-[11px] font-mono text-muted-foreground/50 hover:text-foreground/70 bg-black/10 hover:bg-black/20 transition-colors cursor-pointer border-t border-border/20"
+				>
+					Show all {stepLog.lines.length} lines ({stepLog.lines.length - COLLAPSED_LINE_LIMIT} more)
+				</button>
+			)}
 		</div>
 	);
 }
