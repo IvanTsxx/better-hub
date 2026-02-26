@@ -227,7 +227,7 @@ export function RepoNav({
 			))}
 			<div
 				className={cn(
-					"absolute bottom-0 h-0.5 bg-foreground",
+					"absolute bottom-0 h-0.5 bg-foreground/50",
 					hasAnimated ? "transition-all duration-200 ease-out" : "",
 				)}
 				style={{ left: indicator.left, width: indicator.width }}

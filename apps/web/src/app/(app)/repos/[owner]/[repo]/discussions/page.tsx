@@ -18,7 +18,7 @@ export default async function DiscussionsListPage({
 }) {
 	const { owner, repo } = await params;
 
-	const { discussions, totalCount, categories, hasNextPage, endCursor } =
+	const { discussions, totalCount, categories, hasNextPage, endCursor, repositoryId } =
 		await getRepoDiscussionsPage(owner, repo);
 
 	return (
@@ -30,6 +30,7 @@ export default async function DiscussionsListPage({
 			categories={categories}
 			hasNextPage={hasNextPage}
 			endCursor={endCursor}
+			repositoryId={repositoryId}
 		/>
 	);
 }

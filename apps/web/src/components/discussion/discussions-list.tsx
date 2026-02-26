@@ -9,6 +9,7 @@ import { TimeAgo } from "@/components/ui/time-ago";
 import { LabelBadge } from "@/components/shared/label-badge";
 import { loadMoreDiscussions } from "@/app/(app)/repos/[owner]/[repo]/discussions/actions";
 import type { RepoDiscussionNode, DiscussionCategory } from "@/lib/github";
+import { CreateDiscussionDialog } from "@/components/discussion/create-discussion-dialog";
 
 type TabState = "all" | "answered" | "unanswered";
 
@@ -20,6 +21,7 @@ interface DiscussionsListProps {
 	categories: DiscussionCategory[];
 	hasNextPage: boolean;
 	endCursor: string | null;
+	repositoryId: string;
 }
 
 export function DiscussionsList({
@@ -30,6 +32,7 @@ export function DiscussionsList({
 	categories,
 	hasNextPage: initialHasNextPage,
 	endCursor: initialEndCursor,
+	repositoryId,
 }: DiscussionsListProps) {
 	const [tab, setTab] = useState<TabState>("all");
 	const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -185,6 +188,14 @@ export function DiscussionsList({
 						onChange={(e) => setSearch(e.target.value)}
 						placeholder="Filter discussions..."
 						className="w-full h-7 px-2.5 text-xs bg-transparent border border-border/40 rounded placeholder:text-muted-foreground/30 focus:outline-none focus:border-foreground/20"
+					/>
+				</div>
+				<div className="ml-auto">
+					<CreateDiscussionDialog
+						owner={owner}
+						repo={repo}
+						categories={categories}
+						repositoryId={repositoryId}
 					/>
 				</div>
 			</div>

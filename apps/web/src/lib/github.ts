@@ -3137,6 +3137,7 @@ export interface RepoDiscussionsPageData {
 	categories: DiscussionCategory[];
 	hasNextPage: boolean;
 	endCursor: string | null;
+	repositoryId: string;
 }
 
 export interface DiscussionReply {
@@ -3183,6 +3184,7 @@ export interface DiscussionDetail {
 const DISCUSSIONS_PAGE_GRAPHQL = `
 	query($owner: String!, $repo: String!, $after: String) {
 		repository(owner: $owner, name: $repo) {
+			id
 			discussions(first: 30, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
 				totalCount
 				pageInfo {
@@ -3393,6 +3395,7 @@ async function fetchRepoDiscussionsPageGraphQL(
 			categories: [],
 			hasNextPage: false,
 			endCursor: null,
+			repositoryId: "",
 		};
 	}
 
@@ -3416,6 +3419,7 @@ async function fetchRepoDiscussionsPageGraphQL(
 		),
 		hasNextPage: r.discussions?.pageInfo?.hasNextPage ?? false,
 		endCursor: r.discussions?.pageInfo?.endCursor ?? null,
+		repositoryId: r.id ?? "",
 	};
 }
 
@@ -3487,6 +3491,7 @@ export async function getRepoDiscussionsPage(
 		categories: [],
 		hasNextPage: false,
 		endCursor: null,
+		repositoryId: "",
 	};
 	const data = await readLocalFirstGitData({
 		authCtx,
@@ -3505,6 +3510,7 @@ export async function getRepoDiscussionsPage(
 		...data,
 		hasNextPage: data.hasNextPage ?? false,
 		endCursor: data.endCursor ?? null,
+		repositoryId: data.repositoryId ?? "",
 	};
 }
 
@@ -3574,6 +3580,48 @@ export async function addDiscussionCommentViaGraphQL(
 	}
 	const comment = json.data?.addDiscussionComment?.comment;
 	return comment ? { id: comment.id, databaseId: comment.databaseId } : null;
+}
+
+const CREATE_DISCUSSION_MUTATION = `
+	mutation($repositoryId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
+		createDiscussion(input: { repositoryId: $repositoryId, categoryId: $categoryId, title: $title, body: $body }) {
+			discussion { id number title }
+		}
+	}
+`;
+
+export async function createDiscussionViaGraphQL(
+	repositoryId: string,
+	categoryId: string,
+	title: string,
+	body: string,
+): Promise<{ id: string; number: number; title: string } | null> {
+	const authCtx = await getGitHubAuthContext();
+	if (!authCtx) return null;
+
+	const response = await fetch("https://api.github.com/graphql", {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${authCtx.token}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			query: CREATE_DISCUSSION_MUTATION,
+			variables: { repositoryId, categoryId, title, body },
+		}),
+	});
+
+	if (!response.ok) {
+		throw new Error(`GraphQL mutation failed: ${response.status}`);
+	}
+	const json = await response.json();
+	if (json.errors?.length) {
+		throw new Error(json.errors.map((e: { message: string }) => e.message).join("; "));
+	}
+	const discussion = json.data?.createDiscussion?.discussion;
+	return discussion
+		? { id: discussion.id, number: discussion.number, title: discussion.title }
+		: null;
 }
 
 export async function invalidateRepoDiscussionsCache(owner: string, repo: string) {

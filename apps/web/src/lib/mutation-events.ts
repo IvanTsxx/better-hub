@@ -77,6 +77,12 @@ export type IssueCommentedEvent = {
 
 // ── Discussion Events ──────────────────────────────────────────
 
+export type DiscussionCreatedEvent = {
+	type: "discussion:created";
+	owner: string;
+	repo: string;
+	number: number;
+};
 export type DiscussionCommentedEvent = {
 	type: "discussion:commented";
 	owner: string;
@@ -140,6 +146,7 @@ export type MutationEvent =
 	| IssueReopenedEvent
 	| IssueCreatedEvent
 	| IssueCommentedEvent
+	| DiscussionCreatedEvent
 	| DiscussionCommentedEvent
 	| PromptCreatedEvent
 	| PromptAcceptedEvent
