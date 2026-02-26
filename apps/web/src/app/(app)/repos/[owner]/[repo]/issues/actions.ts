@@ -289,7 +289,12 @@ export async function uploadImage(
 			return { success: true, url: imageUrl };
 		} catch (error) {
 			// If the file already exists (rare but possible), try to get it
-			if (typeof error === "object" && error !== null && "status" in error && error.status === 422) {
+			if (
+				typeof error === "object" &&
+				error !== null &&
+				"status" in error &&
+				error.status === 422
+			) {
 				// File might already exist, construct URL anyway
 				const imageUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${defaultBranch}/${path}`;
 				return { success: true, url: imageUrl };

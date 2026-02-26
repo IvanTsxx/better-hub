@@ -206,7 +206,10 @@ export function CreateIssueDialog({ owner, repo }: { owner: string; repo: string
 					const start = ta.selectionStart;
 					const end = ta.selectionEnd;
 					const imageMarkdown = `\n![${file.name}](${result.url})\n`;
-					const newBody = body.slice(0, start) + imageMarkdown + body.slice(end);
+					const newBody =
+						body.slice(0, start) +
+						imageMarkdown +
+						body.slice(end);
 					setBody(newBody);
 					userTouchedForm.current = true;
 
@@ -218,7 +221,10 @@ export function CreateIssueDialog({ owner, repo }: { owner: string; repo: string
 					});
 				} else {
 					// Fallback: append to end
-					setBody((prev) => prev + `\n![${file.name}](${result.url})\n`);
+					setBody(
+						(prev) =>
+							prev + `\n![${file.name}](${result.url})\n`,
+					);
 				}
 			} else {
 				setError(result.error || "Failed to upload image");
@@ -581,7 +587,9 @@ export function CreateIssueDialog({ owner, repo }: { owner: string; repo: string
 												className="p-1 text-muted-foreground/35 hover:text-muted-foreground transition-colors cursor-pointer rounded"
 												title="Upload image"
 												type="button"
-												disabled={uploadingImages}
+												disabled={
+													uploadingImages
+												}
 											>
 												{uploadingImages ? (
 													<Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -600,14 +608,18 @@ export function CreateIssueDialog({ owner, repo }: { owner: string; repo: string
 									onDrop={handleDrop}
 									className={cn(
 										"flex-1 min-h-0 rounded-lg border border-border/50 dark:border-white/6 overflow-hidden bg-muted/15 dark:bg-white/[0.01] focus-within:border-foreground/15 transition-colors",
-									bodyTab === "write" && "relative",
-								)}
+										bodyTab ===
+											"write" &&
+											"relative",
+									)}
 								>
 									{/* Hidden file input for image upload */}
 									<input
 										type="file"
 										ref={fileInputRef}
-										onChange={handleFileInputChange}
+										onChange={
+											handleFileInputChange
+										}
 										accept="image/*"
 										className="hidden"
 									/>
@@ -617,7 +629,9 @@ export function CreateIssueDialog({ owner, repo }: { owner: string; repo: string
 												ref={
 													textareaRef
 												}
-												value={body}
+												value={
+													body
+												}
 												onChange={(
 													e,
 												) => {
@@ -643,14 +657,17 @@ export function CreateIssueDialog({ owner, repo }: { owner: string; repo: string
 														handleSubmit();
 													}
 												}}
-												onPaste={handlePaste}
+												onPaste={
+													handlePaste
+												}
 											/>
 											{/* Drag overlay hint */}
 											{uploadingImages && (
 												<div className="absolute inset-0 bg-background/80 flex items-center justify-center">
 													<div className="flex items-center gap-2 text-sm text-muted-foreground">
 														<Loader2 className="w-4 h-4 animate-spin" />
-														Uploading image...
+														Uploading
+														image...
 													</div>
 												</div>
 											)}
@@ -679,7 +696,10 @@ export function CreateIssueDialog({ owner, repo }: { owner: string; repo: string
 								{/* Upload hint */}
 								<div className="flex items-center justify-between mt-1">
 									<span className="text-[10px] text-muted-foreground/40">
-										Drag & drop, paste, or click the image button to upload images
+										Drag & drop, paste,
+										or click the image
+										button to upload
+										images
 									</span>
 								</div>
 							</div>
@@ -762,7 +782,7 @@ export function CreateIssueDialog({ owner, repo }: { owner: string; repo: string
 											<button
 												onClick={() =>
 													setShowLabelPicker(
-															true,
+														true,
 													)
 												}
 												className="text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer shrink-0"
