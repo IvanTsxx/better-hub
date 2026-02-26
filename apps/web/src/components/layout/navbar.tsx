@@ -39,6 +39,7 @@ import { cn } from "@/lib/utils";
 import { TimeAgo } from "@/components/ui/time-ago";
 import { markNotificationDone, markAllNotificationsRead } from "@/app/(app)/repos/actions";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
+import { NavbarGhostButton } from "@/components/shared/floating-ghost-button";
 import { $Session } from "@/lib/auth";
 import type { NotificationItem } from "@/lib/github-types";
 
@@ -125,6 +126,9 @@ export function AppNavbar({ session, notifications }: AppNavbarProps) {
 				</div>
 				<div className="flex items-center gap-1.5">
 					<CommandMenu />
+
+					{/* Ghost AI button */}
+					<NavbarGhostButton />
 
 					{/* Notifications bell */}
 					<button
