@@ -33,7 +33,6 @@ import {
 	Eye,
 	EyeOff,
 	Code2,
-	Lightbulb,
 	Check,
 	CheckCircle2,
 	Circle,
@@ -149,7 +148,6 @@ export function PRDiffViewer({
 	const globalChat = useGlobalChatOptional();
 	const onAddContext = globalChat?.addCodeContext;
 	const searchParams = useSearchParams();
-	const router = useRouter();
 
 	// Resolve initial index from ?file= query param
 	const [activeIndex, setActiveIndex] = useState(() => {
