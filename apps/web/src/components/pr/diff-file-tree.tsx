@@ -428,7 +428,7 @@ const DiffTreeNode = memo(function DiffTreeNode({
 				<span className="absolute left-0 top-0 bottom-0 w-0.5 bg-foreground" />
 			)}
 			{isViewed ? (
-				<Check className="w-3 h-3 shrink-0 text-success" />
+				<Check className="w-3 h-3 shrink-0 text-primary" />
 			) : (
 				<Icon
 					className={cn(
@@ -535,7 +535,7 @@ const FlatFileItem = memo(function FlatFileItem({
 				<span className="absolute left-0 top-0 bottom-0 w-0.5 bg-foreground" />
 			)}
 			{isViewed ? (
-				<Check className="w-3 h-3 shrink-0 text-success" />
+				<Check className="w-3 h-3 shrink-0 text-primary" />
 			) : (
 				<Icon
 					className={cn(
@@ -595,12 +595,12 @@ const FlatFileItem = memo(function FlatFileItem({
 					className={cn(
 						"w-3.5 h-3.5 rounded border flex items-center justify-center transition-colors cursor-pointer",
 						isViewed
-							? "bg-success border-success"
+							? "bg-primary border-primary"
 							: "border-muted-foreground/40 hover:border-muted-foreground/60",
 					)}
 				>
 					{isViewed && (
-						<Check className="w-2.5 h-2.5 text-success-foreground" />
+						<Check className="w-2.5 h-2.5 text-primary-foreground" />
 					)}
 				</span>
 			</button>
